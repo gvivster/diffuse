@@ -726,6 +726,25 @@ class FileDiffViewerBase(Gtk.Grid):
                                 if swc is None:
                                     string_width_cache[s] = swc = stringWidth(s)
                                 pane.line_lengths = max(pane.line_lengths, digit_width * swc)
+                
+                # Compute wrapped segments if wrapping is enabled
+                wrap_enabled = self.prefs.getBool('display_wrap_lines')
+                if wrap_enabled and self.wrap_width > 0:
+                    for i, line in enumerate(pane.lines):
+                        if line is not None:
+                            text = line.getText()
+                            if text:
+                                segments = self._calculate_wrapped_segments(
+                                    text, self.wrap_width, digit_width
+                                )
+                                pane.wrapped_cache.append(segments)
+                            else:
+                                pane.wrapped_cache.append(None)
+                        else:
+                            pane.wrapped_cache.append(None)
+                else:
+                    # Ensure wrapped_cache has same length as lines
+                    pane.wrapped_cache.extend([None] * len(pane.lines))
         # compute the maximum extents
         num_lines, line_lengths = 0, 0
         for pane in self.panes:

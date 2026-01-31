@@ -42,3 +42,24 @@ def test_calculate_wrapped_segments_no_spaces():
     assert len(segments) >= 2
     assert segments[0] == (0, 20, 0)
     assert segments[1] == (20, 40, 1)
+
+def test_update_size_populates_wrapped_cache():
+    """updateSize should populate wrapped_cache when wrapping enabled."""
+    prefs = Preferences('test')
+    prefs.setBool('display_wrap_lines', True)
+    viewer = FileDiffViewerBase(2, prefs)
+    
+    # Add some test lines
+    from diffuse.widgets import FileDiffViewerBase
+    viewer.panes[0].lines = [
+        FileDiffViewerBase.Line(1, "Short line"),
+        FileDiffViewerBase.Line(2, "This is a very long line that will need wrapping"),
+    ]
+    
+    viewer.wrap_width = 200  # Simulate narrow viewport
+    viewer.updateSize(compute_width=True, f=0)
+    
+    # Wrapped cache should be populated
+    assert len(viewer.panes[0].wrapped_cache) == 2
+    assert viewer.panes[0].wrapped_cache[0] is not None
+    assert viewer.panes[0].wrapped_cache[1] is not None
