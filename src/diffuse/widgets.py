@@ -173,6 +173,8 @@ class FileDiffViewerBase(Gtk.Grid):
             # wrapped_cache[i] = list of (text_start, text_end, visual_row) tuples
             # or None if line i has not been wrapped yet
             self.wrapped_cache: List[Optional[List[Tuple[int, int, int]]]] = []
+            # total height in pixels when wrapping is enabled (otherwise 0)
+            self.wrapped_total_height = 0
     # class describing a single line of a pane
     class Line:
         def __init__(self, line_number: Optional[int] = None, text: Optional[str] = None) -> None:
@@ -737,6 +739,45 @@ class FileDiffViewerBase(Gtk.Grid):
             segments = [(0, len(text), 0)]
         
         return segments
+    
+    # Helper methods for wrapped line geometry
+    def _get_wrapped_segments_for_line(self, f: int, i: int) -> List[Tuple[int, int, int]]:
+        """Get wrapped segments for a line, or return single segment if not wrapped."""
+        pane = self.panes[f]
+        if i < len(pane.wrapped_cache) and pane.wrapped_cache[i] is not None:
+            return pane.wrapped_cache[i]
+        line = self.getLine(f, i)
+        if line is not None:
+            text = line.getText()
+            if text:
+                return [(0, len(text), 0)]
+        return [(0, 0, 0)]
+    
+    def _get_line_height_rows(self, f: int, i: int) -> int:
+        """Get number of visual rows this line occupies (1 if not wrapped)."""
+        segments = self._get_wrapped_segments_for_line(f, i)
+        if segments:
+            return max(seg[2] for seg in segments) + 1
+        return 1
+    
+    def _get_line_pixel_height(self, f: int, i: int) -> int:
+        """Get the pixel height of a line (may span multiple rows if wrapped)."""
+        if self.prefs.getBool('display_wrap_lines'):
+            num_rows = self._get_line_height_rows(f, i)
+            return num_rows * self.font_height
+        return self.font_height
+    
+    def _get_line_y_position(self, f: int, line_index: int) -> int:
+        """Get the Y pixel position where a line starts."""
+        if not self.prefs.getBool('display_wrap_lines'):
+            return line_index * self.font_height
+        
+        # Calculate cumulative height
+        y = 0
+        for i in range(line_index):
+            y += self._get_line_pixel_height(f, i)
+        return y
+    
     # returns the width of a string in Pango units
     def getTextWidth(self, text: str) -> int:
         if len(text) == 0:
@@ -760,6 +801,7 @@ class FileDiffViewerBase(Gtk.Grid):
             for pane in panes:
                 del pane.syntax_cache[:]
                 del pane.diff_cache[:]
+                del pane.wrapped_cache[:]  # Clear wrapped cache
                 # re-compute the high water mark
                 pane.line_lengths = 0
                 for line in pane.lines:
@@ -775,9 +817,10 @@ class FileDiffViewerBase(Gtk.Grid):
                                     string_width_cache[s] = swc = stringWidth(s)
                                 pane.line_lengths = max(pane.line_lengths, digit_width * swc)
                 
-                # Compute wrapped segments if wrapping is enabled
+                # Compute wrapped segments and total height if wrapping is enabled
                 wrap_enabled = self.prefs.getBool('display_wrap_lines')
                 if wrap_enabled and self.wrap_width > 0:
+                    pane.wrapped_total_height = 0
                     for i, line in enumerate(pane.lines):
                         if line is not None:
                             text = line.getText()
@@ -786,18 +829,28 @@ class FileDiffViewerBase(Gtk.Grid):
                                     text, self.wrap_width, digit_width
                                 )
                                 pane.wrapped_cache.append(segments)
+                                # Add height of this line
+                                num_rows = max(seg[2] for seg in segments) + 1
+                                pane.wrapped_total_height += num_rows * self.font_height
                             else:
                                 pane.wrapped_cache.append(None)
+                                pane.wrapped_total_height += self.font_height
                         else:
                             pane.wrapped_cache.append(None)
+                            pane.wrapped_total_height += self.font_height
                 else:
                     # Ensure wrapped_cache has same length as lines
                     pane.wrapped_cache.extend([None] * len(pane.lines))
+                    pane.wrapped_total_height = 0
         # compute the maximum extents
         num_lines, line_lengths = 0, 0
+        max_wrapped_height = 0
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
         for pane in self.panes:
             num_lines = max(num_lines, len(pane.lines))
             line_lengths = max(line_lengths, pane.line_lengths)
+            if wrap_enabled:
+                max_wrapped_height = max(max_wrapped_height, pane.wrapped_total_height)
         # account for any preedit text
         if self.im_preedit is not None:
             w = self._preedit_layout().get_size()[0]
@@ -810,7 +863,11 @@ class FileDiffViewerBase(Gtk.Grid):
         num_lines += 1
         width = self.getLineNumberWidth() + digit_width + line_lengths
         width = _pixels(width)
-        height = self.font_height * num_lines
+        # Use wrapped height if wrapping is enabled, otherwise use fixed height
+        if wrap_enabled and max_wrapped_height > 0:
+            height = max_wrapped_height + self.font_height  # +1 line for cursor
+        else:
+            height = self.font_height * num_lines
         # update the adjustments
         self.hadj.set_upper(width)
         self.hadj.step_increment = self.font_height
