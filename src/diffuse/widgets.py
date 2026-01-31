@@ -2088,7 +2088,7 @@ class FileDiffViewerBase(Gtk.Grid):
             line.compare_string = s
         return s
 
-    # draw the text viewport
+    def _get_wrapped_segments_for_line(self, f: int, i: int) -> List[Tuple[int, int, int]]:n        """Get wrapped segments for a line, or return single segment if not wrapped."""n        pane = self.panes[f]n        if i < len(pane.wrapped_cache) and pane.wrapped_cache[i] is not None:n            return pane.wrapped_cache[i]n        line = self.getLine(f, i)n        if line is not None:n            text = line.getText()n            if text:n                return [(0, len(text), 0)]n        return [(0, 0, 0)]nnn    def _get_line_height_rows(self, f: int, i: int) -> int:n        """Get number of visual rows this line occupies (1 if not wrapped)."""n        segments = self._get_wrapped_segments_for_line(f, i)n        if segments:n            return max(seg[2] for seg in segments) + 1n        return 1n    # draw the text viewport
     def darea_draw_cb(self, widget, cr, f):
         pane = self.panes[f]
         syntax = theResources.getSyntax(self.syntax)
