@@ -2198,7 +2198,16 @@ class FileDiffViewerBase(Gtk.Grid):
         pane = self.panes[f]
         syntax = theResources.getSyntax(self.syntax)
         wrap_enabled = self.prefs.getBool('display_wrap_lines')
-        wrap_enabled = self.prefs.getBool('display_wrap_lines')
+        
+        # Update wrap_width based on current viewport width
+        if wrap_enabled:
+            rect_alloc = widget.get_allocation()
+            line_number_width = _pixels(self.getLineNumberWidth())
+            viewport_width = rect_alloc.width
+            # Set wrap width to viewport minus line numbers, minimum 100px
+            self.wrap_width = max(100, viewport_width - line_number_width)
+        else:
+            self.wrap_width = 0
 
         rect = widget.get_allocation()
         x = rect.x + int(self.hadj.get_value())
