@@ -1,4 +1,3 @@
-
 from diffuse.widgets import FileDiffViewerBase
 from diffuse.preferences import Preferences
 
@@ -50,7 +49,6 @@ def test_update_size_populates_wrapped_cache():
     viewer = FileDiffViewerBase(2, prefs)
     
     # Add some test lines
-    from diffuse.widgets import FileDiffViewerBase
     viewer.panes[0].lines = [
         FileDiffViewerBase.Line(1, "Short line"),
         FileDiffViewerBase.Line(2, "This is a very long line that will need wrapping"),
