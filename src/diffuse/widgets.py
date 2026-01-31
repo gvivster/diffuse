@@ -2443,67 +2443,88 @@ class FileDiffViewerBase(Gtk.Grid):
                 else:
                     # continue populating the syntax highlighting cache until
                     # line 'i' is included
-                    n = len(pane.syntax_cache)
-                    while i >= n:
-                        temp = self.getLineText(f, n)
-                        if syntax is None:
-                            initial_state, end_state = None, None
-                            if temp is None:
-                                blocks = None
-                            else:
-                                blocks = [(0, len(temp), 'text')]
-                        else:
-                            # apply the syntax highlighting rules to identify
-                            # ranges of similarly coloured characters
-                            if n == 0:
-                                initial_state = syntax.initial_state
-                            else:
-                                initial_state = pane.syntax_cache[-1][1]
-                            if temp is None:
-                                end_state, blocks = initial_state, None
-                            else:
-                                end_state, blocks = syntax.parse(initial_state, temp)
-                        pane.syntax_cache.append([initial_state, end_state, blocks, None])
-                        n += 1
-
-                    # use the cache the position, layout, and colour of each
-                    # span of characters
-                    blocks = pane.syntax_cache[i][3]
-                    if blocks is None:
-                        # populate the cache item if it didn't exist
+                    
+                    # SIMPLE WRAPPED MODE: Use Pango's built-in wrapping
+                    if wrap_enabled and text is not None:
+                        # Create a single layout with the entire line text
                         if ss is None:
                             ss = self.expand(text)
-                        x_temp = 0
-                        blocks = []
-                        for start, end, tag in pane.syntax_cache[i][2]:
-                            layout = self.create_pango_layout(''.join(ss[start:end]))
-                            layout.set_font_description(self.font)
-                            colour = theResources.getColour(tag)
-                            blocks.append((start, end, x_temp, layout, colour))
-                            x_temp += layout.get_size()[0]
-                        pane.syntax_cache[i][3] = blocks
-
-                    # draw text
-                    for starti, endi, start, layout, colour in blocks:
+                        layout = self.create_pango_layout(''.join(ss))
+                        layout.set_font_description(self.font)
+                        # Enable wrapping
+                        layout.set_width(self.wrap_width * Pango.SCALE)
+                        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                        
+                        # Draw the wrapped layout
+                        colour = theResources.getColour('text')
                         cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                        if has_preedit:
-                            # make space for preedit text
-                            if self.current_char <= starti:
-                                start += preeditwidth
-                            elif self.current_char < endi:
-                                # divide text into 2 segments
-                                ss = self.expand(text)
-                                layout = self.create_pango_layout(
-                                    ''.join(ss[starti:self.current_char]))
-                                layout.set_font_description(self.font)
-                                cr.move_to(x_start + _pixels(start), y_start)
-                                PangoCairo.show_layout(cr, layout)
-                                start += layout.get_size()[0] + preeditwidth
-                                layout = self.create_pango_layout(
-                                    ''.join(ss[self.current_char:endi]))
-                                layout.set_font_description(self.font)
-                        cr.move_to(x_start + _pixels(start), y_start)
+                        cr.move_to(x_start, y_start)
                         PangoCairo.show_layout(cr, layout)
+                    else:
+                        # ORIGINAL NON-WRAPPED PATH: Complex syntax highlighting
+                        # continue populating the syntax highlighting cache until
+                        # line 'i' is included
+                        n = len(pane.syntax_cache)
+                        while i >= n:
+                            temp = self.getLineText(f, n)
+                            if syntax is None:
+                                initial_state, end_state = None, None
+                                if temp is None:
+                                    blocks = None
+                                else:
+                                    blocks = [(0, len(temp), 'text')]
+                            else:
+                                # apply the syntax highlighting rules to identify
+                                # ranges of similarly coloured characters
+                                if n == 0:
+                                    initial_state = syntax.initial_state
+                                else:
+                                    initial_state = pane.syntax_cache[-1][1]
+                                if temp is None:
+                                    end_state, blocks = initial_state, None
+                                else:
+                                    end_state, blocks = syntax.parse(initial_state, temp)
+                            pane.syntax_cache.append([initial_state, end_state, blocks, None])
+                            n += 1
+
+                        # use the cache the position, layout, and colour of each
+                        # span of characters
+                        blocks = pane.syntax_cache[i][3]
+                        if blocks is None:
+                            # populate the cache item if it didn't exist
+                            if ss is None:
+                                ss = self.expand(text)
+                            x_temp = 0
+                            blocks = []
+                            for start, end, tag in pane.syntax_cache[i][2]:
+                                layout = self.create_pango_layout(''.join(ss[start:end]))
+                                layout.set_font_description(self.font)
+                                colour = theResources.getColour(tag)
+                                blocks.append((start, end, x_temp, layout, colour))
+                                x_temp += layout.get_size()[0]
+                            pane.syntax_cache[i][3] = blocks
+
+                        # draw text
+                        for starti, endi, start, layout, colour in blocks:
+                            cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                            if has_preedit:
+                                # make space for preedit text
+                                if self.current_char <= starti:
+                                    start += preeditwidth
+                                elif self.current_char < endi:
+                                    # divide text into 2 segments
+                                    ss = self.expand(text)
+                                    layout = self.create_pango_layout(
+                                        ''.join(ss[starti:self.current_char]))
+                                    layout.set_font_description(self.font)
+                                    cr.move_to(x_start + _pixels(start), y_start)
+                                    PangoCairo.show_layout(cr, layout)
+                                    start += layout.get_size()[0] + preeditwidth
+                                    layout = self.create_pango_layout(
+                                        ''.join(ss[self.current_char:endi]))
+                                    layout.set_font_description(self.font)
+                            cr.move_to(x_start + _pixels(start), y_start)
+                            PangoCairo.show_layout(cr, layout)
 
                 if self.current_pane == f and self.current_line == i:
                     # draw the cursor and preedit text
