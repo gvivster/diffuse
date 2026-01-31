@@ -1,3 +1,12 @@
+IN THIS FORK: 
+- I'm using Mac.
+- I'm adding a branch to add line wrapping, the missing feature that dealbreaks this program otherwise perfect for my needs. 
+- I've added dark mode, although I'm not sure if it'll work right for you if you download it. Feel free to experiment if you'd like. I found and implemented this: [[SOLVED] setting dark theme in gtk3 permanently / Newbie Corner / Arch Linux Forums](https://bbs.archlinux.org/viewtopic.php?id=296231)
+
+Original README below.
+
+- Evie (gvivster)
+
 <h1 align="center">
   <img
     src="./data/icons/hicolor/scalable/apps/io.github.mightycreak.Diffuse.svg"
