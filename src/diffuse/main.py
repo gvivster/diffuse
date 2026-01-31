@@ -30,7 +30,7 @@ from diffuse.window import DiffuseWindow
 
 import gi  # type: ignore
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gio, GLib, Gtk  # type: ignore # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # type: ignore # noqa: E402
 
 
 class DiffuseApplication(Gtk.Application):
