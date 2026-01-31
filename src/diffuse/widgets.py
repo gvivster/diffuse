@@ -169,7 +169,10 @@ class FileDiffViewerBase(Gtk.Grid):
             self.format: LineEnding = LineEnding.NO_FORMAT
             # number of lines with edits
             self.num_edits = 0
-
+            # cache of wrapped line information
+            # wrapped_cache[i] = list of (text_start, text_end, visual_row) tuples
+            # or None if line i has not been wrapped yet
+            self.wrapped_cache: List[Optional[List[Tuple[int, int, int]]]] = []
     # class describing a single line of a pane
     class Line:
         def __init__(self, line_number: Optional[int] = None, text: Optional[str] = None) -> None:
@@ -219,7 +222,9 @@ class FileDiffViewerBase(Gtk.Grid):
         self.diffmap_cache = None
 
         # editing mode
-        self.mode = EditMode.LINE
+
+        # line wrapping state
+        self.wrap_width = 0  # width in pixels at which to wrap (0 = no wrap)        self.mode = EditMode.LINE
         self.current_pane = 1
         self.current_line = 0
         self.current_char = 0
