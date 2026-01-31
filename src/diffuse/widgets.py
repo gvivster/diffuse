@@ -643,6 +643,52 @@ class FileDiffViewerBase(Gtk.Grid):
             n = (n + 2) * self.digit_width
         return n
 
+    # calculates how a line should be broken into wrapped segments
+    # returns list of (start_char, end_char, row_index) tuples
+    def _calculate_wrapped_segments(
+        self,
+        text: str,
+        wrap_width: int,
+        char_width: int
+    ) -> List[Tuple[int, int, int]]:
+        """Break text into wrapped segments at word boundaries.
+        
+        Args:
+            text: The text to wrap
+            wrap_width: Maximum width in pixels before wrapping
+            char_width: Average character width in pixels
+            
+        Returns:
+            List of (start_idx, end_idx, row_number) tuples
+        """
+        if wrap_width <= 0 or not text:
+            return [(0, len(text), 0)]
+        
+        max_chars = max(1, wrap_width // char_width)
+        segments = []
+        row = 0
+        pos = 0
+        
+        while pos < len(text):
+            # Calculate end position for this segment
+            end_pos = min(pos + max_chars, len(text))
+            
+            # If we're not at the end, try to break at word boundary
+            if end_pos < len(text):
+                # Look backwards for a space
+                break_pos = text.rfind(' ', pos, end_pos)
+                if break_pos > pos:
+                    end_pos = break_pos + 1  # Include the space
+                # else: hard wrap (no space found)
+            
+            segments.append((pos, end_pos, row))
+            pos = end_pos
+            row += 1
+        
+        if not segments:
+            segments = [(0, len(text), 0)]
+        
+        return segments
     # returns the width of a string in Pango units
     def getTextWidth(self, text: str) -> int:
         if len(text) == 0:
