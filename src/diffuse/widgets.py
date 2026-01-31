@@ -2092,6 +2092,7 @@ class FileDiffViewerBase(Gtk.Grid):
     def darea_draw_cb(self, widget, cr, f):
         pane = self.panes[f]
         syntax = theResources.getSyntax(self.syntax)
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
 
         rect = widget.get_allocation()
         x = rect.x + int(self.hadj.get_value())
