@@ -819,6 +819,19 @@ class FileDiffViewerBase(Gtk.Grid):
                 
                 # Compute wrapped line counts and total height if wrapping is enabled
                 wrap_enabled = self.prefs.getBool('display_wrap_lines')
+                
+                # Calculate wrap_width if wrapping is enabled
+                if wrap_enabled and len(self.dareas) > 0:
+                    rect_alloc = self.dareas[0].get_allocation()
+                    line_number_width = _pixels(self.getLineNumberWidth())
+                    viewport_width = rect_alloc.width
+                    # Only set wrap_width if we have a valid viewport width
+                    if viewport_width > 0:
+                        self.wrap_width = max(100, viewport_width - line_number_width)
+                    # else keep existing wrap_width (might be 0 on first call)
+                else:
+                    self.wrap_width = 0
+                
                 if wrap_enabled and self.wrap_width > 0:
                     pane.wrapped_total_height = 0
                     for i, line in enumerate(pane.lines):
@@ -1822,6 +1835,31 @@ class FileDiffViewerBase(Gtk.Grid):
                 text = text[:j]
                 return self.getTextWidth(''.join(self.expand(text)))
         return 0
+    
+    # get the cursor position (x, y_row_offset) for wrapped text
+    # returns (x_offset_pango_units, row_within_line)
+    def _get_cursor_position_wrapped(self, f: int, i: int, char_pos: int) -> tuple:
+        """Calculate cursor X and Y position within a wrapped line."""
+        text = self.getLineText(f, i)
+        if text is None or not self.prefs.getBool('display_wrap_lines'):
+            return (self._get_cursor_x_offset(), 0)
+        
+        # Create a wrapped Pango layout
+        layout = self.create_pango_layout(text[:char_pos])
+        layout.set_font_description(self.font)
+        layout.set_width(self.wrap_width * Pango.SCALE)
+        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+        
+        # Get the line count - this tells us which wrapped row we're on
+        line_count = layout.get_line_count()
+        row = max(0, line_count - 1)
+        
+        # Get the last line's width for X position
+        last_line = layout.get_line(row)
+        extents = last_line.get_pixel_extents()[1]
+        x_offset = extents.width * Pango.SCALE
+        
+        return (x_offset, row)
 
     # scroll to ensure the current cursor position is visible
     def _ensure_cursor_is_visible(self) -> None:
@@ -1972,7 +2010,22 @@ class FileDiffViewerBase(Gtk.Grid):
         x = int(event.x + self.hadj.get_value())
         y = int(event.y + self.vadj.get_value())
         nlines = len(self.panes[f].lines)
-        i = min(y // self.font_height, nlines)
+        
+        # Calculate which line was clicked
+        if self.prefs.getBool('display_wrap_lines'):
+            # For wrapped mode, walk through lines to find which contains y
+            i = 0
+            y_pos = 0
+            while i < nlines:
+                line_height = self._get_line_pixel_height(f, i)
+                if y < y_pos + line_height:
+                    break
+                y_pos += line_height
+                i += 1
+            i = min(i, nlines)
+        else:
+            # For non-wrapped mode, simple division
+            i = min(y // self.font_height, nlines)
         if event.button == 1:
             # left mouse button
             if event.type == Gdk.EventType._2BUTTON_PRESS:
@@ -2247,8 +2300,14 @@ class FileDiffViewerBase(Gtk.Grid):
 
             # line numbers
             if line_number_width > 0 and maxx > 0 and line_number_width > x:
+                # Calculate actual height for this line
+                if wrap_enabled:
+                    line_height = self._get_line_pixel_height(f, i)
+                else:
+                    line_height = h
+                
                 cr.save()
-                cr.rectangle(0, y_start, line_number_width, h)
+                cr.rectangle(0, y_start, line_number_width, line_height)
                 cr.clip()
                 colour = theResources.getColour('line_number_background')
                 cr.set_source_rgb(colour.red, colour.green, colour.blue)
@@ -2548,7 +2607,15 @@ class FileDiffViewerBase(Gtk.Grid):
                 if self.current_pane == f and self.current_line == i:
                     # draw the cursor and preedit text
                     if self.mode == EditMode.CHAR:
-                        x_pos = x_start + _pixels(self._get_cursor_x_offset())
+                        # Get cursor position within wrapped line
+                        if wrap_enabled:
+                            x_offset, row = self._get_cursor_position_wrapped(f, i, self.current_char)
+                            x_pos = x_start + _pixels(x_offset)
+                            cursor_y = y_start + (row * h)
+                        else:
+                            x_pos = x_start + _pixels(self._get_cursor_x_offset())
+                            cursor_y = y_start
+                        
                         if has_preedit:
                             # we have preedit text
                             layout = self._preedit_layout()
@@ -2557,12 +2624,12 @@ class FileDiffViewerBase(Gtk.Grid):
                             # clear the background
                             colour = preedit_bg_colour
                             cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                            cr.rectangle(x_pos, y_start, w, h)
+                            cr.rectangle(x_pos, cursor_y, w, h)
                             cr.fill()
                             # draw the preedit text
                             colour = theResources.getColour('preedit')
                             cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                            cr.move_to(x_pos, y_start)
+                            cr.move_to(x_pos, cursor_y)
                             PangoCairo.show_layout(cr, layout)
                             # advance to the preedit's cursor position
                             x_pos += _pixels(self._preedit_layout(True).get_size()[0])
@@ -2570,7 +2637,7 @@ class FileDiffViewerBase(Gtk.Grid):
                         colour = theResources.getColour('cursor')
                         cr.set_source_rgb(colour.red, colour.green, colour.blue)
                         cr.set_line_width(1)
-                        cr.move_to(x_pos + 0.5, y_start)
+                        cr.move_to(x_pos + 0.5, cursor_y)
                         cr.rel_line_to(0, h)
                         cr.stroke()
                     elif self.mode in (EditMode.LINE, EditMode.ALIGN):
