@@ -827,9 +827,19 @@ class FileDiffViewerBase(Gtk.Grid):
                     viewport_width = rect_alloc.width
                     # Only set wrap_width if we have a valid viewport width
                     if viewport_width > 0:
-                        self.wrap_width = max(100, viewport_width - line_number_width)
+                        new_wrap_width = max(100, viewport_width - line_number_width)
+                        # If wrap width changed, invalidate cursor column
+                        if new_wrap_width != self.wrap_width:
+                            self.cursor_column = -1
+                            with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                                log.write(f"\n=== WRAP WIDTH CHANGED ===\n")
+                                log.write(f"  Old: {self.wrap_width}, New: {new_wrap_width}\n")
+                                log.write(f"  Invalidated cursor_column\n")
+                        self.wrap_width = new_wrap_width
                     # else keep existing wrap_width (might be 0 on first call)
                 else:
+                    if self.wrap_width != 0:
+                        self.cursor_column = -1
                     self.wrap_width = 0
                 
                 if wrap_enabled and self.wrap_width > 0:
@@ -2477,8 +2487,17 @@ class FileDiffViewerBase(Gtk.Grid):
             line_number_width = _pixels(self.getLineNumberWidth())
             viewport_width = rect_alloc.width
             # Set wrap width to viewport minus line numbers, minimum 100px
-            self.wrap_width = max(100, viewport_width - line_number_width)
+            new_wrap_width = max(100, viewport_width - line_number_width)
+            if new_wrap_width != self.wrap_width:
+                self.cursor_column = -1
+                with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                    log.write(f"\n=== WRAP WIDTH CHANGED (draw) ===\n")
+                    log.write(f"  Old: {self.wrap_width}, New: {new_wrap_width}\n")
+                    log.write(f"  Invalidated cursor_column\n")
+            self.wrap_width = new_wrap_width
         else:
+            if self.wrap_width != 0:
+                self.cursor_column = -1
             self.wrap_width = 0
 
         rect = widget.get_allocation()
