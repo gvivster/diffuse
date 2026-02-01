@@ -85,7 +85,8 @@ class Preferences:
                 ['Boolean', 'display_ignore_whitespace', False, _('Ignore white space differences')],  # noqa: E501
                 ['Boolean', 'display_ignore_whitespace_changes', False, _('Ignore changes to white space')],  # noqa: E501
                 ['Boolean', 'display_ignore_blanklines', False, _('Ignore blank line differences')],
-                ['Boolean', 'display_ignore_endofline', False, _('Ignore end of line differences')]
+                ['Boolean', 'display_ignore_endofline', False, _('Ignore end of line differences')],
+                ['Boolean', 'display_wrap_lines', False, _('Wrap long lines')]
             ],
             _('Alignment'),
             [

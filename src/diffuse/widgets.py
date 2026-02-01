@@ -169,7 +169,14 @@ class FileDiffViewerBase(Gtk.Grid):
             self.format: LineEnding = LineEnding.NO_FORMAT
             # number of lines with edits
             self.num_edits = 0
-
+            # cache of wrapped line information
+            # wrapped_cache[i] = list of (text_start, text_end, visual_row) tuples
+            # or None if line i has not been wrapped yet
+            self.wrapped_cache: List[Optional[List[Tuple[int, int, int]]]] = []
+            # cache of wrapped line pixel heights
+            self.wrapped_height_cache: List[int] = []
+            # total height in pixels when wrapping is enabled (otherwise 0)
+            self.wrapped_total_height = 0
     # class describing a single line of a pane
     class Line:
         def __init__(self, line_number: Optional[int] = None, text: Optional[str] = None) -> None:
@@ -219,6 +226,10 @@ class FileDiffViewerBase(Gtk.Grid):
         self.diffmap_cache = None
 
         # editing mode
+
+        # line wrapping state
+        self.wrap_width = 0  # width in pixels at which to wrap (0 = no wrap)
+
         self.mode = EditMode.LINE
         self.current_pane = 1
         self.current_line = 0
@@ -638,6 +649,148 @@ class FileDiffViewerBase(Gtk.Grid):
             n = (n + 2) * self.digit_width
         return n
 
+    # calculates how a line should be broken into wrapped segments
+    # returns list of (start_char, end_char, row_index) tuples
+    def _calculate_wrapped_segments(
+        self,
+        text: str,
+        wrap_width: int,
+        char_width: int
+    ) -> List[Tuple[int, int, int]]:
+        """Break text into wrapped segments at word boundaries.
+        
+        Args:
+            text: The text to wrap
+            wrap_width: Maximum width in pixels before wrapping
+            char_width: Average character width in pixels
+            
+        Returns:
+            List of (start_idx, end_idx, row_number) tuples
+        """
+        if wrap_width <= 0 or not text:
+            return [(0, len(text), 0)]
+        
+        max_chars = max(1, wrap_width // char_width)
+        segments = []
+        row = 0
+        pos = 0
+        
+        while pos < len(text):
+            # Calculate end position for this segment
+            end_pos = min(pos + max_chars, len(text))
+            
+            # If we're not at the end, try to break at word boundary
+            if end_pos < len(text):
+                # Look backwards for a space
+                break_pos = text.rfind(' ', pos, end_pos)
+                if break_pos > pos:
+                    end_pos = break_pos + 1  # Include the space
+                # else: hard wrap (no space found)
+            
+            segments.append((pos, end_pos, row))
+            pos = end_pos
+            row += 1
+        
+        if not segments:
+            segments = [(0, len(text), 0)]
+        
+        return segments
+    # calculates how a line should be broken into wrapped segments
+    # returns list of (start_char, end_char, row_index) tuples
+    def _calculate_wrapped_segments(
+        self,
+        text: str,
+        wrap_width: int,
+        char_width: int
+    ) -> List[Tuple[int, int, int]]:
+        """Break text into wrapped segments at word boundaries.
+        
+        Args:
+            text: The text to wrap
+            wrap_width: Maximum width in pixels before wrapping
+            char_width: Average character width in pixels
+            
+        Returns:
+            List of (start_idx, end_idx, row_number) tuples
+        """
+        if wrap_width <= 0 or not text:
+            return [(0, len(text), 0)]
+        
+        max_chars = max(1, wrap_width // char_width)
+        segments = []
+        row = 0
+        pos = 0
+        
+        while pos < len(text):
+            # Calculate end position for this segment
+            end_pos = min(pos + max_chars, len(text))
+            
+            # If we're not at the end, try to break at word boundary
+            if end_pos < len(text):
+                # Look backwards for a space
+                break_pos = text.rfind(' ', pos, end_pos)
+                if break_pos > pos:
+                    end_pos = break_pos + 1  # Include the space
+                # else: hard wrap (no space found)
+            
+            segments.append((pos, end_pos, row))
+            pos = end_pos
+            row += 1
+        
+        if not segments:
+            segments = [(0, len(text), 0)]
+        
+        return segments
+    
+    # Helper methods for wrapped line geometry
+    def _get_wrapped_segments_for_line(self, f: int, i: int) -> List[Tuple[int, int, int]]:
+        """Get wrapped segments for a line, or return single segment if not wrapped."""
+        pane = self.panes[f]
+        if i < len(pane.wrapped_cache) and pane.wrapped_cache[i] is not None:
+            return pane.wrapped_cache[i]
+        line = self.getLine(f, i)
+        if line is not None:
+            text = line.getText()
+            if text:
+                return [(0, len(text), 0)]
+        return [(0, 0, 0)]
+    
+    def _get_line_height_rows(self, f: int, i: int) -> int:
+        """Get number of visual rows this line occupies (1 if not wrapped)."""
+        pane = self.panes[f]
+        if i < len(pane.wrapped_cache) and pane.wrapped_cache[i] is not None:
+            return pane.wrapped_cache[i]  # Now stores int line count, not segments
+        return 1
+    
+    def _get_line_pixel_height(self, f: int, i: int) -> int:
+        """Get the pixel height of a line (may span multiple rows if wrapped)."""
+        if self.prefs.getBool('display_wrap_lines'):
+            # Use actual Pango layout height instead of calculation
+            text = self.getLineText(f, i)
+            if text:
+                expanded = self.expand(text)
+                expanded_text = ''.join(expanded)
+                layout = self.create_pango_layout(expanded_text)
+                layout.set_font_description(self.font)
+                layout.set_width(self.wrap_width * Pango.SCALE)
+                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                
+                actual_width, actual_height = layout.get_pixel_size()
+                return actual_height
+            return self.font_height
+        return self.font_height
+    
+    def _get_line_y_position(self, f: int, line_index: int) -> int:
+        """Get the Y pixel position where a line starts."""
+        if not self.prefs.getBool('display_wrap_lines'):
+            return line_index * self.font_height
+        
+        # Calculate cumulative height
+        y = 0
+        for i in range(line_index):
+            y += self._get_line_pixel_height(f, i)
+        return y
+    
     # returns the width of a string in Pango units
     def getTextWidth(self, text: str) -> int:
         if len(text) == 0:
@@ -661,6 +814,8 @@ class FileDiffViewerBase(Gtk.Grid):
             for pane in panes:
                 del pane.syntax_cache[:]
                 del pane.diff_cache[:]
+                del pane.wrapped_cache[:]  # Clear wrapped cache
+                del pane.wrapped_height_cache[:]  # Clear wrapped height cache
                 # re-compute the high water mark
                 pane.line_lengths = 0
                 for line in pane.lines:
@@ -675,11 +830,71 @@ class FileDiffViewerBase(Gtk.Grid):
                                 if swc is None:
                                     string_width_cache[s] = swc = stringWidth(s)
                                 pane.line_lengths = max(pane.line_lengths, digit_width * swc)
+                
+                # Compute wrapped line counts and total height if wrapping is enabled
+                wrap_enabled = self.prefs.getBool('display_wrap_lines')
+                
+                # Calculate wrap_width if wrapping is enabled
+                if wrap_enabled and len(self.dareas) > 0:
+                    rect_alloc = self.dareas[0].get_allocation()
+                    line_number_width = _pixels(self.getLineNumberWidth())
+                    viewport_width = rect_alloc.width
+                    # Only set wrap_width if we have a valid viewport width
+                    if viewport_width > 0:
+                        new_wrap_width = max(100, viewport_width - line_number_width)
+                        # If wrap width changed, invalidate cursor column
+                        if new_wrap_width != self.wrap_width:
+                            self.cursor_column = -1
+                            with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                                log.write(f"\n=== WRAP WIDTH CHANGED ===\n")
+                                log.write(f"  Old: {self.wrap_width}, New: {new_wrap_width}\n")
+                                log.write(f"  Invalidated cursor_column\n")
+                        self.wrap_width = new_wrap_width
+                    # else keep existing wrap_width (might be 0 on first call)
+                else:
+                    if self.wrap_width != 0:
+                        self.cursor_column = -1
+                    self.wrap_width = 0
+                
+                if wrap_enabled and self.wrap_width > 0:
+                    pane.wrapped_total_height = 0
+                    for i, line in enumerate(pane.lines):
+                        if line is not None:
+                            text = line.getText()
+                            if text:
+                                # Use Pango to measure wrapped line count
+                                layout = self.create_pango_layout(text)
+                                layout.set_font_description(self.font)
+                                layout.set_width(self.wrap_width * Pango.SCALE)
+                                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                                line_count = layout.get_line_count()
+                                width, height = layout.get_pixel_size()
+                                pane.wrapped_cache.append(line_count)
+                                pane.wrapped_height_cache.append(height)
+                                # Add height of this line using actual Pango height
+                                pane.wrapped_total_height += height
+                            else:
+                                pane.wrapped_cache.append(1)
+                                pane.wrapped_height_cache.append(self.font_height)
+                                pane.wrapped_total_height += self.font_height
+                        else:
+                            pane.wrapped_cache.append(1)
+                            pane.wrapped_height_cache.append(self.font_height)
+                            pane.wrapped_total_height += self.font_height
+                else:
+                    # Ensure wrapped_cache has same length as lines
+                    pane.wrapped_cache.extend([1] * len(pane.lines))
+                    pane.wrapped_height_cache.extend([self.font_height] * len(pane.lines))
+                    pane.wrapped_total_height = 0
         # compute the maximum extents
         num_lines, line_lengths = 0, 0
+        max_wrapped_height = 0
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
         for pane in self.panes:
             num_lines = max(num_lines, len(pane.lines))
             line_lengths = max(line_lengths, pane.line_lengths)
+            if wrap_enabled:
+                max_wrapped_height = max(max_wrapped_height, pane.wrapped_total_height)
         # account for any preedit text
         if self.im_preedit is not None:
             w = self._preedit_layout().get_size()[0]
@@ -690,9 +905,19 @@ class FileDiffViewerBase(Gtk.Grid):
         # the cursor can move one line past the last line of text, add it so we
         # can scroll to see this line
         num_lines += 1
-        width = self.getLineNumberWidth() + digit_width + line_lengths
+        
+        # In wrapped mode, limit width to wrap_width; in unwrapped mode, use full line lengths
+        if wrap_enabled and self.wrap_width > 0:
+            width = self.getLineNumberWidth() + (self.wrap_width * Pango.SCALE)
+        else:
+            width = self.getLineNumberWidth() + digit_width + line_lengths
         width = _pixels(width)
-        height = self.font_height * num_lines
+        
+        # Use wrapped height if wrapping is enabled, otherwise use fixed height
+        if wrap_enabled and max_wrapped_height > 0:
+            height = max_wrapped_height + self.font_height  # +1 line for cursor
+        else:
+            height = self.font_height * num_lines
         # update the adjustments
         self.hadj.set_upper(width)
         self.hadj.step_increment = self.font_height
@@ -1552,15 +1777,35 @@ class FileDiffViewerBase(Gtk.Grid):
             line1 = line0
         elif line0 > line1:
             line0, line1 = line1, line0
+        
         darea = self.dareas[f]
-        w, h = darea.get_allocation().width, self.font_height
-        darea.queue_draw_area(0, line0 * h - int(self.vadj.get_value()), w, (line1 - line0 + 1) * h)
+        w = darea.get_allocation().width
+        
+        if self.prefs.getBool('display_wrap_lines'):
+            # Use actual wrapped line positions
+            y0 = self._get_line_y_position(f, line0)
+            y1 = self._get_line_y_position(f, line1) + self._get_line_pixel_height(f, line1)
+            darea.queue_draw_area(0, y0 - int(self.vadj.get_value()), w, y1 - y0)
+        else:
+            # Fixed height calculation for non-wrapped mode
+            h = self.font_height
+            darea.queue_draw_area(0, line0 * h - int(self.vadj.get_value()), w, (line1 - line0 + 1) * h)
 
     # scroll vertically to ensure the current line is visible
     def _ensure_line_is_visible(self, i: int) -> None:
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
         h = self.font_height
-        lower = i * h
-        upper = lower + h
+        
+        if wrap_enabled:
+            # Calculate Y position by summing wrapped heights
+            f = self.current_pane
+            lower = self._get_line_y_position(f, i)
+            upper = lower + self._get_line_pixel_height(f, i)
+        else:
+            # Fixed height calculation
+            lower = i * h
+            upper = lower + h
+        
         vadj = self.vadj
         v = vadj.get_value()
         ps = vadj.get_page_size()
@@ -1645,26 +1890,168 @@ class FileDiffViewerBase(Gtk.Grid):
                 text = text[:j]
                 return self.getTextWidth(''.join(self.expand(text)))
         return 0
+    
+    def _move_cursor_vertical_wrapped(self, f: int, i: int, j: int, direction: int, target_x_col: int) -> tuple:
+        """
+        Move cursor up/down one visual row in wrapped mode.
+        
+        Args:
+            f: pane index
+            i: current line index
+            j: current character position
+            direction: -1 for up, +1 for down
+            target_x_col: target X column to maintain (in character width units)
+        
+        Returns:
+            (new_line_index, new_char_pos, moved_to_different_line)
+            moved_to_different_line is True if we couldn't stay within current line
+        """
+        text = self.getLineText(f, i)
+        if text is None:
+            return (i, j, True)
+        
+        # Get current position
+        expanded = self.expand(text)
+        expanded_text = ''.join(expanded)
+        
+        # Create Pango layout
+        layout = self.create_pango_layout(expanded_text)
+        layout.set_font_description(self.font)
+        layout.set_width(self.wrap_width * Pango.SCALE)
+        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+        
+        # Get actual per-row height from Pango
+        num_rows = layout.get_line_count()
+        if num_rows > 0:
+            # Get the actual height of the layout and divide by number of rows
+            layout_width, layout_height = layout.get_pixel_size()
+            actual_row_height = layout_height // num_rows if num_rows > 0 else self.font_height
+        else:
+            actual_row_height = self.font_height
+        
+        # Get current cursor position (byte index and X/Y)
+        if j > len(expanded):
+            j = len(expanded)
+        expanded_before_cursor = ''.join(expanded[:j])
+        byte_index = len(expanded_before_cursor.encode('utf-8'))
+        current_pos = layout.index_to_pos(byte_index)
+        
+        # Current row and X position - use actual row height
+        current_row = current_pos.y // (actual_row_height * Pango.SCALE)
+        current_x = current_pos.x
+        current_x_pixels = current_x // Pango.SCALE
+        
+        # Calculate target row
+        target_row = current_row + direction
+        
+        # DEBUG OUTPUT to file
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"\n=== _move_cursor_vertical_wrapped ===\n")
+            log.write(f"  Line {i}, char {j}, direction {'UP' if direction < 0 else 'DOWN'}\n")
+            log.write(f"  Actual row height: {actual_row_height}px (font_height: {self.font_height}px)\n")
+            log.write(f"  Current row: {current_row}/{num_rows}\n")
+            log.write(f"  Current X (Pango): {current_x}, pixels: {current_x_pixels}\n")
+            log.write(f"  Target X col (input): {target_x_col}\n")
+            log.write(f"  Target row: {target_row}\n")
+        
+        # Check if target row is outside current line
+        if target_row < 0 or target_row >= num_rows:
+            with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                log.write(f"  → Moving to different line (target_row out of bounds)\n")
+            return (i, j, True)  # Signal: need to move to different line
+        
+        # Use target_x_col to calculate target X in Pango units
+        # target_x_col is in character width units, convert to Pango units
+        target_x_pango = target_x_col * Pango.SCALE
+        
+        # Calculate Y position for target row (center of row) - use actual row height
+        target_y_pango = (target_row * actual_row_height + actual_row_height // 2) * Pango.SCALE
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"  Target X (Pango): {target_x_pango}, pixels: {target_x_col}\n")
+            log.write(f"  Target Y (Pango): {target_y_pango}, pixels: {target_y_pango // Pango.SCALE}\n")
+        
+        # Ask Pango: which character is at this X,Y position?
+        inside, byte_index, trailing = layout.xy_to_index(target_x_pango, target_y_pango)
+        
+        # Convert byte index back to character index
+        byte_text = expanded_text.encode('utf-8')[:byte_index]
+        new_char_pos = len(byte_text.decode('utf-8'))
+        
+        # Handle trailing (cursor after character vs before)
+        if trailing and new_char_pos < len(expanded_text):
+            new_char_pos += 1
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"  Result: byte_index={byte_index}, trailing={trailing}, new_char_pos={new_char_pos}\n")
+            log.write(f"  → Staying within same line\n")
+        
+        return (i, new_char_pos, False)  # Stayed within same line
+    
+    # get the cursor position (x, y_row_offset) for wrapped text
+    # returns (x_offset_pango_units, row_within_line)
+    def _get_cursor_position_wrapped(self, f: int, i: int, char_pos: int) -> tuple:
+        """Calculate cursor X and Y position within a wrapped line using Pango's index_to_pos()."""
+        text = self.getLineText(f, i)
+        if text is None or not self.prefs.getBool('display_wrap_lines'):
+            return (self._get_cursor_x_offset(), 0)
+        
+        # Expand text to match how it's rendered (tabs → spaces, etc.)
+        expanded = self.expand(text)
+        expanded_text = ''.join(expanded)
+        
+        # Create full layout with wrapping
+        layout = self.create_pango_layout(expanded_text)
+        layout.set_font_description(self.font)
+        layout.set_width(self.wrap_width * Pango.SCALE)
+        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+        
+        # Get actual per-row height from Pango
+        num_rows = layout.get_line_count()
+        if num_rows > 0:
+            layout_width, layout_height = layout.get_pixel_size()
+            actual_row_height = layout_height // num_rows if num_rows > 0 else self.font_height
+        else:
+            actual_row_height = self.font_height
+        
+        # Ask Pango: where is this character?
+        # Need UTF-8 byte index (Pango uses bytes, not chars)
+        # Handle case where char_pos might be beyond expanded_text length
+        if char_pos > len(expanded):
+            char_pos = len(expanded)
+        
+        expanded_before_cursor = ''.join(expanded[:char_pos])
+        byte_index = len(expanded_before_cursor.encode('utf-8'))
+        pos = layout.index_to_pos(byte_index)
+        
+        # pos has x, y, width, height in Pango units - use actual row height
+        row = pos.y // (actual_row_height * Pango.SCALE)
+        x_offset = pos.x
+        
+        return (x_offset, row)
 
     # scroll to ensure the current cursor position is visible
     def _ensure_cursor_is_visible(self) -> None:
         current_line = self.current_line
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
 
-        # find the cursor's horizontal range
-        lower = self._get_cursor_x_offset()
-        if self.im_preedit is not None:
-            lower += self._preedit_layout(True).get_size()[0]
-        upper = lower + self.getLineNumberWidth() + self.digit_width
-        lower, upper = _pixels(lower), _pixels(upper)
+        # In wrapped mode, don't scroll horizontally based on unwrapped position
+        if not wrap_enabled:
+            # find the cursor's horizontal range
+            lower = self._get_cursor_x_offset()
+            if self.im_preedit is not None:
+                lower += self._preedit_layout(True).get_size()[0]
+            upper = lower + self.getLineNumberWidth() + self.digit_width
+            lower, upper = _pixels(lower), _pixels(upper)
 
-        # scroll horizontally
-        hadj = self.hadj
-        v = hadj.get_value()
-        ps = hadj.get_page_size()
-        if lower < v:
-            hadj.set_value(lower)
-        elif upper > v + ps:
-            hadj.set_value(upper - ps)
+            # scroll horizontally
+            hadj = self.hadj
+            v = hadj.get_value()
+            ps = hadj.get_page_size()
+            if lower < v:
+                hadj.set_value(lower)
+            elif upper > v + ps:
+                hadj.set_value(upper - ps)
 
         # scroll vertically to current line
         self._ensure_line_is_visible(current_line)
@@ -1683,7 +2070,14 @@ class FileDiffViewerBase(Gtk.Grid):
         line0, line1 = self.current_line, self.selection_line
 
         # clear remembered cursor column
+        old_cursor_column = self.cursor_column
         self.cursor_column = -1
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"\n=== setCurrentChar ===\n")
+            log.write(f"  Setting cursor: line {i}, char {j}\n")
+            log.write(f"  Old cursor_column: {old_cursor_column} → -1 (cleared)\n")
+        
         # update cursor and selection
         extend = (si is not None and sj is not None)
         if not extend:
@@ -1764,15 +2158,91 @@ class FileDiffViewerBase(Gtk.Grid):
                 return i
             w += width
         return n
+    
+    # returns the character index for a click at (x, y_within_line) on wrapped text
+    def _getPickedCharacter_wrapped(self, text: Optional[str], x: int, y_within_line: int, partial: bool) -> int:
+        """Find character index for click position in wrapped text."""
+        if text is None:
+            return 0
+        
+        # Expand text to match rendering
+        expanded = self.expand(text)
+        expanded_text = ''.join(expanded)
+        
+        # Create wrapped layout
+        layout = self.create_pango_layout(expanded_text)
+        layout.set_font_description(self.font)
+        layout.set_width(self.wrap_width * Pango.SCALE)
+        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+        
+        # Determine which wrapped row was clicked
+        clicked_row = y_within_line // self.font_height
+        line_count = layout.get_line_count()
+        
+        if clicked_row >= line_count:
+            # Click beyond last row, return end of text
+            return len(expanded)
+        
+        # Get the layout line for this row
+        pango_line = layout.get_line(clicked_row)
+        
+        # Get X position relative to start of text (remove line number width)
+        x_relative = (x - _pixels(self.getLineNumberWidth())) * Pango.SCALE
+        
+        # Use Pango to find which character was clicked
+        # xy_to_index returns (inside, index, trailing)
+        inside, byte_index, trailing = pango_line.x_to_index(x_relative)
+        
+        # Convert byte index back to character index
+        # Get the text up to this byte
+        byte_text = expanded_text.encode('utf-8')[:byte_index]
+        char_index = len(byte_text.decode('utf-8'))
+        
+        # Add trailing if we're closer to next character
+        char_index += trailing
+        
+        # Clamp to valid range
+        return min(char_index, len(expanded))
+
 
     # update the selection in response to a mouse button press
-    def button_press(self, f, x, y, extend):
+    # if line_index is provided, use it instead of calculating from y
+    def button_press(self, f, x, y, extend, line_index=None, y_within_line=None):
         if y < 0:
             x, y = -1, 0
-        i = min(y // self.font_height, len(self.panes[f].lines))
+        
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
+        nlines = len(self.panes[f].lines)
+        
+        # Calculate which line was clicked and Y position within that line
+        if line_index is not None:
+            # Line already calculated by caller (e.g., darea_button_press_cb in wrapped mode)
+            i = line_index
+            if y_within_line is None:
+                y_within_line = 0
+        elif wrap_enabled:
+            # Calculate for wrapped mode
+            i = 0
+            y_pos = 0
+            while i < nlines:
+                line_height = self._get_line_pixel_height(f, i)
+                if y < y_pos + line_height:
+                    break
+                y_pos += line_height
+                i += 1
+            i = min(i, nlines)
+            y_within_line = y - y_pos
+        else:
+            # Non-wrapped mode
+            i = min(y // self.font_height, nlines)
+            y_within_line = 0
+        
         if self.mode == EditMode.CHAR and f == self.current_pane:
             text = utils.strip_eol(self.getLineText(f, i))
-            j = self._getPickedCharacter(text, x, True)
+            if wrap_enabled:
+                j = self._getPickedCharacter_wrapped(text, x, y_within_line, True)
+            else:
+                j = self._getPickedCharacter(text, x, True)
             if extend:
                 si, sj = self.selection_line, self.selection_char
             else:
@@ -1795,7 +2265,27 @@ class FileDiffViewerBase(Gtk.Grid):
         x = int(event.x + self.hadj.get_value())
         y = int(event.y + self.vadj.get_value())
         nlines = len(self.panes[f].lines)
-        i = min(y // self.font_height, nlines)
+        
+        # Calculate which line was clicked
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
+        if wrap_enabled:
+            # For wrapped mode, walk through lines to find which contains y
+            i = 0
+            y_pos = 0
+            while i < nlines:
+                line_height = self._get_line_pixel_height(f, i)
+                if y < y_pos + line_height:
+                    break
+                y_pos += line_height
+                i += 1
+            i = min(i, nlines)
+            y_within_line = y - y_pos
+        else:
+            # For non-wrapped mode, simple division
+            i = min(y // self.font_height, nlines)
+            y_within_line = 0
+            y_pos = None
+            
         if event.button == 1:
             # left mouse button
             if event.type == Gdk.EventType._2BUTTON_PRESS:
@@ -1808,14 +2298,17 @@ class FileDiffViewerBase(Gtk.Grid):
                     # silently switch mode so the viewer does not scroll yet.
                     self.mode = EditMode.CHAR
                     self._im_focus_in()
-                    self.button_press(f, x, y, False)
+                    self.button_press(f, x, y, False, line_index=i, y_within_line=y_within_line)
                     self.emit('mode-changed')
                 elif self.mode == EditMode.CHAR and self.current_pane == f:
                     # select word
                     text = utils.strip_eol(self.getLineText(f, i))
                     if text is not None:
                         n = len(text)
-                        j = self._getPickedCharacter(text, x, False)
+                        if wrap_enabled:
+                            j = self._getPickedCharacter_wrapped(text, x, y_within_line, False)
+                        else:
+                            j = self._getPickedCharacter(text, x, False)
                         if j < n:
                             c = _get_character_class(text[j])
                             k = j
@@ -1833,11 +2326,11 @@ class FileDiffViewerBase(Gtk.Grid):
                 # update the selection
                 is_shifted = event.state & Gdk.ModifierType.SHIFT_MASK
                 extend = (is_shifted and f == self.current_pane)
-                self.button_press(f, x, y, extend)
+                self.button_press(f, x, y, extend, line_index=i, y_within_line=y_within_line)
         elif event.button == 2:
             # middle mouse button, paste primary selection
             if self.mode == EditMode.CHAR and f == self.current_pane:
-                self.button_press(f, x, y, False)
+                self.button_press(f, x, y, False, line_index=i, y_within_line=y_within_line)
                 self.openUndoBlock()
                 Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).request_text(
                     self.receive_clipboard_text_cb,
@@ -2018,10 +2511,30 @@ class FileDiffViewerBase(Gtk.Grid):
             line.compare_string = s
         return s
 
-    # draw the text viewport
+# draw the text viewport
     def darea_draw_cb(self, widget, cr, f):
         pane = self.panes[f]
         syntax = theResources.getSyntax(self.syntax)
+        wrap_enabled = self.prefs.getBool('display_wrap_lines')
+        
+        # Update wrap_width based on current viewport width
+        if wrap_enabled:
+            rect_alloc = widget.get_allocation()
+            line_number_width = _pixels(self.getLineNumberWidth())
+            viewport_width = rect_alloc.width
+            # Set wrap width to viewport minus line numbers, minimum 100px
+            new_wrap_width = max(100, viewport_width - line_number_width)
+            if new_wrap_width != self.wrap_width:
+                self.cursor_column = -1
+                with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                    log.write(f"\n=== WRAP WIDTH CHANGED (draw) ===\n")
+                    log.write(f"  Old: {self.wrap_width}, New: {new_wrap_width}\n")
+                    log.write(f"  Invalidated cursor_column\n")
+            self.wrap_width = new_wrap_width
+        else:
+            if self.wrap_width != 0:
+                self.cursor_column = -1
+            self.wrap_width = 0
 
         rect = widget.get_allocation()
         x = rect.x + int(self.hadj.get_value())
@@ -2041,15 +2554,32 @@ class FileDiffViewerBase(Gtk.Grid):
         diffcolours.append((diffcolours[0] + diffcolours[1]) * 0.5)
 
         # iterate over each exposed line
-        i = y // h
-        y_start = i * h
+        if wrap_enabled:
+            # For wrapped mode, find first visible line differently
+            i = 0
+            y_start = 0
+            # Skip lines until we reach viewport
+            while i < len(pane.lines) and y_start + self._get_line_pixel_height(f, i) <= y:
+                y_start += self._get_line_pixel_height(f, i)
+                i += 1
+        else:
+            # For non-wrapped mode, use simple division
+            i = y // h
+            y_start = i * h
+        
         while y_start < maxy:
             line = self.getLine(f, i)
 
             # line numbers
             if line_number_width > 0 and maxx > 0 and line_number_width > x:
+                # Calculate actual height for this line
+                if wrap_enabled:
+                    line_height = self._get_line_pixel_height(f, i)
+                else:
+                    line_height = h
+                
                 cr.save()
-                cr.rectangle(0, y_start, line_number_width, h)
+                cr.rectangle(0, y_start, line_number_width, line_height)
                 cr.clip()
                 colour = theResources.getColour('line_number_background')
                 cr.set_source_rgb(colour.red, colour.green, colour.blue)
@@ -2068,8 +2598,14 @@ class FileDiffViewerBase(Gtk.Grid):
 
             x_start = line_number_width
             if x_start < maxx:
+                # Calculate actual height needed for this line
+                if wrap_enabled:
+                    text_height = self._get_line_pixel_height(f, i)
+                else:
+                    text_height = h
+                
                 cr.save()
-                cr.rectangle(x_start, y_start, maxx - x_start, h)
+                cr.rectangle(x_start, y_start, maxx - x_start, text_height)
                 cr.clip()
 
                 text = self.getLineText(f, i)
@@ -2161,8 +2697,62 @@ class FileDiffViewerBase(Gtk.Grid):
                             elif self.current_char < endi:
                                 w += preeditwidth
                         cr.set_source_rgba(colour.red, colour.green, colour.blue, alpha)
-                        cr.rectangle(x_start + _pixels(start), y_start, _pixels(w), h)
-                        cr.fill()
+                        
+                        # For wrapped text, need to draw highlights on each wrapped row
+                        if wrap_enabled and self.wrap_width > 0:
+                            # Create wrapped layout to find actual character positions
+                            expanded = self.expand(text)
+                            expanded_text = ''.join(expanded)
+                            layout = self.create_pango_layout(expanded_text)
+                            layout.set_font_description(self.font)
+                            layout.set_width(self.wrap_width * Pango.SCALE)
+                            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                            
+                            # Get positions of start and end characters
+                            start_char = starti
+                            end_char = endi
+                            
+                            # Convert to byte indices
+                            start_byte = len(''.join(expanded[:start_char]).encode('utf-8'))
+                            end_byte = len(''.join(expanded[:end_char]).encode('utf-8'))
+                            
+                            # Get positions from Pango
+                            start_pos = layout.index_to_pos(start_byte)
+                            end_pos = layout.index_to_pos(end_byte)
+                            
+                            # Calculate which rows they're on
+                            start_row = start_pos.y // (self.font_height * Pango.SCALE)
+                            end_row = end_pos.y // (self.font_height * Pango.SCALE)
+                            
+                            # Draw rectangles for each row
+                            if start_row == end_row:
+                                # Same row - simple rectangle
+                                rect_x = start_pos.x
+                                rect_w = end_pos.x - start_pos.x
+                                cr.rectangle(x_start + _pixels(rect_x), y_start + (start_row * h), _pixels(rect_w), h)
+                                cr.fill()
+                            else:
+                                # Multiple rows - draw rectangle for each
+                                for row in range(start_row, end_row + 1):
+                                    if row == start_row:
+                                        # First row: from start_pos.x to end of wrap width
+                                        rect_x = start_pos.x
+                                        rect_w = (self.wrap_width * Pango.SCALE) - start_pos.x
+                                    elif row == end_row:
+                                        # Last row: from 0 to end_pos.x
+                                        rect_x = 0
+                                        rect_w = end_pos.x
+                                    else:
+                                        # Middle rows: full width
+                                        rect_x = 0
+                                        rect_w = self.wrap_width * Pango.SCALE
+                                    
+                                    cr.rectangle(x_start + _pixels(rect_x), y_start + (row * h), _pixels(rect_w), h)
+                                    cr.fill()
+                        else:
+                            # Non-wrapped mode: original single rectangle
+                            cr.rectangle(x_start + _pixels(start), y_start, _pixels(w), h)
+                            cr.fill()
 
                 if has_preedit or (line is not None and line.is_modified):
                     # draw modified
@@ -2257,72 +2847,121 @@ class FileDiffViewerBase(Gtk.Grid):
                 else:
                     # continue populating the syntax highlighting cache until
                     # line 'i' is included
-                    n = len(pane.syntax_cache)
-                    while i >= n:
-                        temp = self.getLineText(f, n)
-                        if syntax is None:
-                            initial_state, end_state = None, None
-                            if temp is None:
-                                blocks = None
-                            else:
-                                blocks = [(0, len(temp), 'text')]
-                        else:
-                            # apply the syntax highlighting rules to identify
-                            # ranges of similarly coloured characters
-                            if n == 0:
-                                initial_state = syntax.initial_state
-                            else:
-                                initial_state = pane.syntax_cache[-1][1]
-                            if temp is None:
-                                end_state, blocks = initial_state, None
-                            else:
-                                end_state, blocks = syntax.parse(initial_state, temp)
-                        pane.syntax_cache.append([initial_state, end_state, blocks, None])
-                        n += 1
-
-                    # use the cache the position, layout, and colour of each
-                    # span of characters
-                    blocks = pane.syntax_cache[i][3]
-                    if blocks is None:
-                        # populate the cache item if it didn't exist
+                    
+                    # SIMPLE WRAPPED MODE: Use Pango's built-in wrapping
+                    if wrap_enabled and text is not None:
+                        # Create a single layout with the entire line text
                         if ss is None:
                             ss = self.expand(text)
-                        x_temp = 0
-                        blocks = []
-                        for start, end, tag in pane.syntax_cache[i][2]:
-                            layout = self.create_pango_layout(''.join(ss[start:end]))
-                            layout.set_font_description(self.font)
-                            colour = theResources.getColour(tag)
-                            blocks.append((start, end, x_temp, layout, colour))
-                            x_temp += layout.get_size()[0]
-                        pane.syntax_cache[i][3] = blocks
-
-                    # draw text
-                    for starti, endi, start, layout, colour in blocks:
+                        layout = self.create_pango_layout(''.join(ss))
+                        layout.set_font_description(self.font)
+                        # Enable wrapping
+                        layout.set_width(self.wrap_width * Pango.SCALE)
+                        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                        
+                        # Draw the wrapped layout
+                        colour = theResources.getColour('text')
                         cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                        if has_preedit:
-                            # make space for preedit text
-                            if self.current_char <= starti:
-                                start += preeditwidth
-                            elif self.current_char < endi:
-                                # divide text into 2 segments
-                                ss = self.expand(text)
-                                layout = self.create_pango_layout(
-                                    ''.join(ss[starti:self.current_char]))
-                                layout.set_font_description(self.font)
-                                cr.move_to(x_start + _pixels(start), y_start)
-                                PangoCairo.show_layout(cr, layout)
-                                start += layout.get_size()[0] + preeditwidth
-                                layout = self.create_pango_layout(
-                                    ''.join(ss[self.current_char:endi]))
-                                layout.set_font_description(self.font)
-                        cr.move_to(x_start + _pixels(start), y_start)
+                        cr.move_to(x_start, y_start)
                         PangoCairo.show_layout(cr, layout)
+                    else:
+                        # ORIGINAL NON-WRAPPED PATH: Complex syntax highlighting
+                        # continue populating the syntax highlighting cache until
+                        # line 'i' is included
+                        n = len(pane.syntax_cache)
+                        while i >= n:
+                            temp = self.getLineText(f, n)
+                            if syntax is None:
+                                initial_state, end_state = None, None
+                                if temp is None:
+                                    blocks = None
+                                else:
+                                    blocks = [(0, len(temp), 'text')]
+                            else:
+                                # apply the syntax highlighting rules to identify
+                                # ranges of similarly coloured characters
+                                if n == 0:
+                                    initial_state = syntax.initial_state
+                                else:
+                                    initial_state = pane.syntax_cache[-1][1]
+                                if temp is None:
+                                    end_state, blocks = initial_state, None
+                                else:
+                                    end_state, blocks = syntax.parse(initial_state, temp)
+                            pane.syntax_cache.append([initial_state, end_state, blocks, None])
+                            n += 1
+
+                        # use the cache the position, layout, and colour of each
+                        # span of characters
+                        blocks = pane.syntax_cache[i][3]
+                        if blocks is None:
+                            # populate the cache item if it didn't exist
+                            if ss is None:
+                                ss = self.expand(text)
+                            x_temp = 0
+                            blocks = []
+                            for start, end, tag in pane.syntax_cache[i][2]:
+                                layout = self.create_pango_layout(''.join(ss[start:end]))
+                                layout.set_font_description(self.font)
+                                colour = theResources.getColour(tag)
+                                blocks.append((start, end, x_temp, layout, colour))
+                                x_temp += layout.get_size()[0]
+                            pane.syntax_cache[i][3] = blocks
+
+                        # draw text
+                        for starti, endi, start, layout, colour in blocks:
+                            cr.set_source_rgb(colour.red, colour.green, colour.blue)
+                            if has_preedit:
+                                # make space for preedit text
+                                if self.current_char <= starti:
+                                    start += preeditwidth
+                                elif self.current_char < endi:
+                                    # divide text into 2 segments
+                                    ss = self.expand(text)
+                                    layout = self.create_pango_layout(
+                                        ''.join(ss[starti:self.current_char]))
+                                    layout.set_font_description(self.font)
+                                    cr.move_to(x_start + _pixels(start), y_start)
+                                    PangoCairo.show_layout(cr, layout)
+                                    start += layout.get_size()[0] + preeditwidth
+                                    layout = self.create_pango_layout(
+                                        ''.join(ss[self.current_char:endi]))
+                                    layout.set_font_description(self.font)
+                            cr.move_to(x_start + _pixels(start), y_start)
+                            PangoCairo.show_layout(cr, layout)
 
                 if self.current_pane == f and self.current_line == i:
                     # draw the cursor and preedit text
                     if self.mode == EditMode.CHAR:
-                        x_pos = x_start + _pixels(self._get_cursor_x_offset())
+                        # Get cursor position within wrapped line
+                        if wrap_enabled:
+                            # Get actual per-row height for this line
+                            text = self.getLineText(f, i)
+                            if text:
+                                expanded = self.expand(text)
+                                expanded_text = ''.join(expanded)
+                                layout = self.create_pango_layout(expanded_text)
+                                layout.set_font_description(self.font)
+                                layout.set_width(self.wrap_width * Pango.SCALE)
+                                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                                num_rows = layout.get_line_count()
+                                if num_rows > 0:
+                                    layout_width, layout_height = layout.get_pixel_size()
+                                    actual_row_height = layout_height // num_rows
+                                else:
+                                    actual_row_height = h
+                            else:
+                                actual_row_height = h
+                            
+                            x_offset, row = self._get_cursor_position_wrapped(f, i, self.current_char)
+                            x_pos = x_start + _pixels(x_offset)
+                            cursor_y = y_start + (row * actual_row_height)
+                            cursor_height = actual_row_height
+                        else:
+                            x_pos = x_start + _pixels(self._get_cursor_x_offset())
+                            cursor_y = y_start
+                            cursor_height = h
+                        
                         if has_preedit:
                             # we have preedit text
                             layout = self._preedit_layout()
@@ -2331,12 +2970,12 @@ class FileDiffViewerBase(Gtk.Grid):
                             # clear the background
                             colour = preedit_bg_colour
                             cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                            cr.rectangle(x_pos, y_start, w, h)
+                            cr.rectangle(x_pos, cursor_y, w, cursor_height)
                             cr.fill()
                             # draw the preedit text
                             colour = theResources.getColour('preedit')
                             cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                            cr.move_to(x_pos, y_start)
+                            cr.move_to(x_pos, cursor_y)
                             PangoCairo.show_layout(cr, layout)
                             # advance to the preedit's cursor position
                             x_pos += _pixels(self._preedit_layout(True).get_size()[0])
@@ -2344,8 +2983,8 @@ class FileDiffViewerBase(Gtk.Grid):
                         colour = theResources.getColour('cursor')
                         cr.set_source_rgb(colour.red, colour.green, colour.blue)
                         cr.set_line_width(1)
-                        cr.move_to(x_pos + 0.5, y_start)
-                        cr.rel_line_to(0, h)
+                        cr.move_to(x_pos + 0.5, cursor_y)
+                        cr.rel_line_to(0, cursor_height)
                         cr.stroke()
                     elif self.mode in (EditMode.LINE, EditMode.ALIGN):
                         # draw the line editing cursor
@@ -2360,7 +2999,10 @@ class FileDiffViewerBase(Gtk.Grid):
                 cr.restore()
             # advance to the next exposed line
             i += 1
-            y_start += h
+            if wrap_enabled:
+                y_start += self._get_line_pixel_height(f, i - 1)
+            else:
+                y_start += h
 
     # callback used when panes are scrolled horizontally
     def hadj_changed_cb(self, adj):
@@ -2719,39 +3361,157 @@ class FileDiffViewerBase(Gtk.Grid):
             # up/down cursor navigation
             elif event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Page_Up, Gdk.KEY_Page_Down]:
                 i = self.current_line
+                j = self.current_char
+                
                 # move back to the remembered cursor column if possible
                 col = self.cursor_column
                 if col < 0:
                     # find the current cursor column
-                    s = utils.null_to_empty(self.getLineText(f, i))[:self.current_char]
-                    col = self.stringWidth(s)
-                if event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down]:
-                    delta = 1
+                    # For wrapped mode, we need pixel X position, not character width
+                    if self.prefs.getBool('display_wrap_lines'):
+                        # Get actual pixel X position from Pango
+                        text = self.getLineText(f, i)
+                        if text is not None:
+                            expanded = self.expand(text)
+                            expanded_text = ''.join(expanded)
+                            layout = self.create_pango_layout(expanded_text)
+                            layout.set_font_description(self.font)
+                            layout.set_width(self.wrap_width * Pango.SCALE)
+                            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                            
+                            if j > len(expanded):
+                                j = len(expanded)
+                            expanded_before_cursor = ''.join(expanded[:j])
+                            byte_index = len(expanded_before_cursor.encode('utf-8'))
+                            pos = layout.index_to_pos(byte_index)
+                            col = pos.x // Pango.SCALE  # Get pixel X position
+                        else:
+                            col = 0
+                    else:
+                        # Non-wrapped mode: use character width units
+                        s = utils.null_to_empty(self.getLineText(f, i))[:j]
+                        col = self.stringWidth(s)
+                    
+                    with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                        log.write(f"\n=== ARROW KEY: Computing col from scratch ===\n")
+                        log.write(f"  Line {i}, char {j}\n")
+                        log.write(f"  Wrapped mode: {self.prefs.getBool('display_wrap_lines')}\n")
+                        log.write(f"  Calculated col: {col}\n")
                 else:
+                    with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                        log.write(f"\n=== ARROW KEY: Using remembered cursor_column ===\n")
+                        log.write(f"  Line {i}, char {j}\n")
+                        log.write(f"  Remembered col: {col}\n")
+                
+                # Handle Page Up/Down (existing behavior - skip wrapped rows)
+                if event.keyval in [Gdk.KEY_Page_Up, Gdk.KEY_Page_Down]:
                     delta = int(self.vadj.get_page_size() // self.font_height)
-                if event.keyval in [Gdk.KEY_Up, Gdk.KEY_Page_Up]:
-                    delta = -delta
-                i += delta
-                j = 0
-                nlines = len(self.panes[f].lines)
-                if i < 0:
-                    i = 0
-                elif i > nlines:
-                    i = nlines
-                else:
-                    # move the cursor to column 'col' if possible
-                    s = self.getLineText(f, i)
-                    if s is not None:
-                        s = utils.strip_eol(s)
-                        idx = 0
-                        for c in s:
-                            w = self.characterWidth(idx, c)
-                            if idx + w > col:
-                                break
-                            idx += w
-                            j += 1
-                self.setCurrentChar(i, j, si, sj)
-                self.cursor_column = col
+                    if event.keyval == Gdk.KEY_Page_Up:
+                        delta = -delta
+                    i += delta
+                    j = 0
+                    nlines = len(self.panes[f].lines)
+                    if i < 0:
+                        i = 0
+                    elif i > nlines:
+                        i = nlines
+                    else:
+                        # move the cursor to column 'col' if possible
+                        s = self.getLineText(f, i)
+                        if s is not None:
+                            s = utils.strip_eol(s)
+                            idx = 0
+                            for c in s:
+                                w = self.characterWidth(idx, c)
+                                if idx + w > col:
+                                    break
+                                idx += w
+                                j += 1
+                    self.setCurrentChar(i, j, si, sj)
+                    self.cursor_column = col
+                
+                # Handle Up/Down arrows
+                elif event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down]:
+                    direction = -1 if event.keyval == Gdk.KEY_Up else 1
+                    
+                    # Try wrapped mode navigation first
+                    if self.prefs.getBool('display_wrap_lines'):
+                        new_i, new_j, moved_to_different_line = self._move_cursor_vertical_wrapped(
+                            f, i, j, direction, col
+                        )
+                        
+                        if not moved_to_different_line:
+                            # Successfully moved within same line
+                            self.setCurrentChar(new_i, new_j, si, sj)
+                            self.cursor_column = col
+                        else:
+                            # Need to move to different line
+                            i += direction
+                            nlines = len(self.panes[f].lines)
+                            
+                            if i < 0:
+                                i = 0
+                                j = 0
+                            elif i > nlines:
+                                i = nlines
+                                j = 0
+                            else:
+                                # Move to appropriate row of target line
+                                if direction == 1:
+                                    # Moving down: go to first row of next line
+                                    target_row = 0
+                                else:
+                                    # Moving up: go to last row of previous line
+                                    num_rows = self._get_line_height_rows(f, i)
+                                    target_row = num_rows - 1
+                                
+                                # Find character position at target_row with column 'col'
+                                text = self.getLineText(f, i)
+                                if text is not None:
+                                    expanded = self.expand(text)
+                                    expanded_text = ''.join(expanded)
+                                    
+                                    layout = self.create_pango_layout(expanded_text)
+                                    layout.set_font_description(self.font)
+                                    layout.set_width(self.wrap_width * Pango.SCALE)
+                                    layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                                    
+                                    target_x_pango = col * Pango.SCALE
+                                    target_y_pango = (target_row * self.font_height + self.font_height // 2) * Pango.SCALE
+                                    
+                                    inside, byte_index, trailing = layout.xy_to_index(target_x_pango, target_y_pango)
+                                    byte_text = expanded_text.encode('utf-8')[:byte_index]
+                                    j = len(byte_text.decode('utf-8'))
+                                    if trailing and j < len(expanded_text):
+                                        j += 1
+                                else:
+                                    j = 0
+                            
+                            self.setCurrentChar(i, j, si, sj)
+                            self.cursor_column = col
+                    else:
+                        # Non-wrapped mode: existing behavior (move to previous/next line)
+                        i += direction
+                        j = 0
+                        nlines = len(self.panes[f].lines)
+                        if i < 0:
+                            i = 0
+                        elif i > nlines:
+                            i = nlines
+                        else:
+                            # move the cursor to column 'col' if possible
+                            s = self.getLineText(f, i)
+                            if s is not None:
+                                s = utils.strip_eol(s)
+                                idx = 0
+                                for c in s:
+                                    w = self.characterWidth(idx, c)
+                                    if idx + w > col:
+                                        break
+                                    idx += w
+                                    j += 1
+                        self.setCurrentChar(i, j, si, sj)
+                        self.cursor_column = col
             # home key
             elif event.keyval == Gdk.KEY_Home:
                 if is_ctrl:
