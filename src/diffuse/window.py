@@ -418,7 +418,7 @@ class FileDiffViewer(FileDiffViewerBase):
                     ) % {'rev': rev, 'file': name}
                 else:
                     msg = _('Error reading %s.') % (name, )
-                utils.logErrorAndDialog(msg, self.get_toplevel())
+                self._record_open_error(msg)
                 return
         # update the panes contents, last modified time, and title
         self.replaceContents(f, ss)
@@ -681,6 +681,8 @@ class DiffuseWindow(Gtk.ApplicationWindow):
         self.prefs = Preferences(os.path.join(rc_dir, 'prefs'))
         # number of created viewers (used to label some tabs)
         self.viewer_count = 0
+        self._open_batch_depth = 0
+        self._open_batch_errors: List[str] = []
 
         # state information that should persist across sessions
         self.bool_state = {
@@ -702,7 +704,6 @@ class DiffuseWindow(Gtk.ApplicationWindow):
         self.search_history: List[str] = []
 
         self.connect('delete-event', self.delete_cb)
-
         # create a Box for our contents
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
@@ -888,6 +889,47 @@ class DiffuseWindow(Gtk.ApplicationWindow):
         self.add(vbox)
         vbox.show()
         self.connect('focus-in-event', self.focus_in_cb)
+
+    def begin_open_batch(self) -> None:
+        self._open_batch_depth += 1
+
+    def end_open_batch(self) -> None:
+        if self._open_batch_depth == 0:
+            return
+        self._open_batch_depth -= 1
+        if self._open_batch_depth == 0 and self._open_batch_errors:
+            GLib.idle_add(self._show_open_batch_errors)
+
+    def _record_open_error(self, msg: str) -> None:
+        if self._open_batch_depth > 0:
+            self._open_batch_errors.append(msg)
+        else:
+            utils.logErrorAndDialog(msg, self.get_toplevel())
+
+    def _show_open_batch_errors(self) -> bool:
+        errors = self._open_batch_errors
+        self._open_batch_errors = []
+        if not errors:
+            return False
+        if len(errors) == 1:
+            utils.logErrorAndDialog(errors[0], self.get_toplevel())
+            return False
+
+        for msg in errors:
+            utils.logError(msg)
+
+        primary_text = _('Errors reading files')
+        secondary_text = '\n'.join(errors)
+        dialog = Gtk.MessageDialog(
+            transient_for=self.get_toplevel(),
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=primary_text,
+        )
+        dialog.format_secondary_text(secondary_text)
+        dialog.run()
+        dialog.destroy()
+        return False
 
     def _create_menu(self, sections):
         menu = Gio.Menu.new()

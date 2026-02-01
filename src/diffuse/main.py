@@ -252,109 +252,120 @@ also retrieve revisions of files from several VCSs for comparison and merging.''
         diff_window = DiffuseWindow(rc_dir, application=self)
         self.window = diff_window
 
+        if os.environ.get('DIFFUSE_CLI_DEBUG'):
+            try:
+                with open('/tmp/diffuse-cli-args.log', 'a') as log:
+                    log.write(f'raw_args={command_line.get_arguments()!r}\n')
+            except OSError:
+                pass
+
         # load state
         self.statepath = os.path.join(data_dir, 'state')
         diff_window.load_state(self.statepath)
 
         # process remaining command line arguments
-        encoding = None
-        revs = []
-        close_on_same = False
-        specs = []
-        had_specs = False
-        labels = []
-        funcs = {
-            'modified': diff_window.createModifiedFileTabs,
-            'commit': diff_window.createCommitFileTabs,
-            'separate': diff_window.createSeparateTabs,
-            'single': diff_window.createSingleTab,
-        }
-        mode = 'single'
-        opts = {}
-        if 'commit' in options:
-            # specified revision
-            funcs[mode](specs, labels, options)
-            specs, labels, opts = [], [], {'commit': options['commit']}
-            mode = 'commit'
-        if 'close-if-same' in options:
-            close_on_same = True
-        if 'encoding' in options:
-            encoding = options['encoding']
-            encoding = encodings.aliases.aliases.get(encoding, encoding)
-        if 'modified' in options:
-            funcs[mode](specs, labels, opts)
-            specs, labels, opts = [], [], {}
-            mode = 'modified'
-        if 'revision' in options:
-            # specified revision
-            revs.append((options['revision'], encoding))
-        if 'separate' in options:
-            funcs[mode](specs, labels, opts)
-            specs, labels, opts = [], [], {}
-            # open items in separate tabs
-            mode = 'separate'
-        if 'tab' in options:
-            funcs[mode](specs, labels, opts)
-            specs, labels, opts = [], [], {}
-            # start a new tab
+        diff_window.begin_open_batch()
+        try:
+            encoding = None
+            revs = []
+            close_on_same = False
+            specs = []
+            had_specs = False
+            labels = []
+            funcs = {
+                'modified': diff_window.createModifiedFileTabs,
+                'commit': diff_window.createCommitFileTabs,
+                'separate': diff_window.createSeparateTabs,
+                'single': diff_window.createSingleTab,
+            }
             mode = 'single'
-        if 'vcs' in options:
-            diff_window.prefs.setString('vcs_search_order', options['vcs'])
-            diff_window.preferences_updated()
-        if 'ignore-space-change' in options:
-            diff_window.prefs.setBool('display_ignore_whitespace_changes', True)
-            diff_window.prefs.setBool('align_ignore_whitespace_changes', True)
-            diff_window.preferences_updated()
-        if 'ignore-blank-lines' in options:
-            diff_window.prefs.setBool('display_ignore_blanklines', True)
-            diff_window.prefs.setBool('align_ignore_blanklines', True)
-            diff_window.preferences_updated()
-        if 'ignore-end-of-line' in options:
-            diff_window.prefs.setBool('display_ignore_endofline', True)
-            diff_window.prefs.setBool('align_ignore_endofline', True)
-            diff_window.preferences_updated()
-        if 'ignore-case' in options:
-            diff_window.prefs.setBool('display_ignore_case', True)
-            diff_window.prefs.setBool('align_ignore_case', True)
-            diff_window.preferences_updated()
-        if 'ignore-all-space' in options:
-            diff_window.prefs.setBool('display_ignore_whitespace', True)
-            diff_window.prefs.setBool('align_ignore_whitespace', True)
-            diff_window.preferences_updated()
-        if 'label' in options:
-            labels.append(options['label'])
-        if 'line' in options:
-            try:
-                opts['line'] = int(options['line'])
-            except ValueError:
-                utils.logError(_('Error parsing line number.'))
-        if 'null-file' in options:
-            # add a blank file pane
-            if mode == 'single' or mode == 'separate':
-                if len(revs) == 0:
-                    revs.append((None, encoding))
-                specs.append((None, revs))
-                revs = []
-            had_specs = True
-        for arg in command_line.get_arguments()[1:]:
-            filename = diff_window.prefs.convertToNativePath(arg)
-            if (mode == 'single' or mode == 'separate') and os.path.isdir(filename):
-                if len(specs) > 0:
-                    filename = os.path.join(filename, os.path.basename(specs[-1][0]))
-                else:
-                    utils.logError(
-                        _('Error processing argument "%s".  Directory not expected.') % (arg,))
-                    filename = None
-            if filename is not None:
-                if len(revs) == 0:
-                    revs.append((None, encoding))
-                specs.append((filename, revs))
-                revs = []
-            had_specs = True
-        if mode in ['modified', 'commit'] and len(specs) == 0:
-            specs.append((os.curdir, [(None, encoding)]))
-            had_specs = True
-        funcs[mode](specs, labels, opts)
+            opts = {}
+            if 'commit' in options:
+                # specified revision
+                funcs[mode](specs, labels, options)
+                specs, labels, opts = [], [], {'commit': options['commit']}
+                mode = 'commit'
+            if 'close-if-same' in options:
+                close_on_same = True
+            if 'encoding' in options:
+                encoding = options['encoding']
+                encoding = encodings.aliases.aliases.get(encoding, encoding)
+            if 'modified' in options:
+                funcs[mode](specs, labels, opts)
+                specs, labels, opts = [], [], {}
+                mode = 'modified'
+            if 'revision' in options:
+                # specified revision
+                revs.append((options['revision'], encoding))
+            if 'separate' in options:
+                funcs[mode](specs, labels, opts)
+                specs, labels, opts = [], [], {}
+                # open items in separate tabs
+                mode = 'separate'
+            if 'tab' in options:
+                funcs[mode](specs, labels, opts)
+                specs, labels, opts = [], [], {}
+                # start a new tab
+                mode = 'single'
+            if 'vcs' in options:
+                diff_window.prefs.setString('vcs_search_order', options['vcs'])
+                diff_window.preferences_updated()
+            if 'ignore-space-change' in options:
+                diff_window.prefs.setBool('display_ignore_whitespace_changes', True)
+                diff_window.prefs.setBool('align_ignore_whitespace_changes', True)
+                diff_window.preferences_updated()
+            if 'ignore-blank-lines' in options:
+                diff_window.prefs.setBool('display_ignore_blanklines', True)
+                diff_window.prefs.setBool('align_ignore_blanklines', True)
+                diff_window.preferences_updated()
+            if 'ignore-end-of-line' in options:
+                diff_window.prefs.setBool('display_ignore_endofline', True)
+                diff_window.prefs.setBool('align_ignore_endofline', True)
+                diff_window.preferences_updated()
+            if 'ignore-case' in options:
+                diff_window.prefs.setBool('display_ignore_case', True)
+                diff_window.prefs.setBool('align_ignore_case', True)
+                diff_window.preferences_updated()
+            if 'ignore-all-space' in options:
+                diff_window.prefs.setBool('display_ignore_whitespace', True)
+                diff_window.prefs.setBool('align_ignore_whitespace', True)
+                diff_window.preferences_updated()
+            if 'label' in options:
+                labels.append(options['label'])
+            if 'line' in options:
+                try:
+                    opts['line'] = int(options['line'])
+                except ValueError:
+                    utils.logError(_('Error parsing line number.'))
+            if 'null-file' in options:
+                # add a blank file pane
+                if mode == 'single' or mode == 'separate':
+                    if len(revs) == 0:
+                        revs.append((None, encoding))
+                    specs.append((None, revs))
+                    revs = []
+                had_specs = True
+            for arg in command_line.get_arguments()[1:]:
+                filename = diff_window.prefs.convertToNativePath(arg)
+                if (mode == 'single' or mode == 'separate') and os.path.isdir(filename):
+                    if len(specs) > 0:
+                        filename = os.path.join(filename, os.path.basename(specs[-1][0]))
+                    else:
+                        utils.logError(
+                            _('Error processing argument "%s".  Directory not expected.') % (arg,))
+                        filename = None
+                if filename is not None:
+                    if len(revs) == 0:
+                        revs.append((None, encoding))
+                    specs.append((filename, revs))
+                    revs = []
+                had_specs = True
+            if mode in ['modified', 'commit'] and len(specs) == 0:
+                specs.append((os.curdir, [(None, encoding)]))
+                had_specs = True
+            funcs[mode](specs, labels, opts)
+        finally:
+            diff_window.end_open_batch()
 
         # create a file diff viewer if the command line arguments haven't
         # implicitly created any
