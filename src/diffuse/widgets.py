@@ -1862,6 +1862,94 @@ class FileDiffViewerBase(Gtk.Grid):
                 return self.getTextWidth(''.join(self.expand(text)))
         return 0
     
+    def _move_cursor_vertical_wrapped(self, f: int, i: int, j: int, direction: int, target_x_col: int) -> tuple:
+        """
+        Move cursor up/down one visual row in wrapped mode.
+        
+        Args:
+            f: pane index
+            i: current line index
+            j: current character position
+            direction: -1 for up, +1 for down
+            target_x_col: target X column to maintain (in character width units)
+        
+        Returns:
+            (new_line_index, new_char_pos, moved_to_different_line)
+            moved_to_different_line is True if we couldn't stay within current line
+        """
+        text = self.getLineText(f, i)
+        if text is None:
+            return (i, j, True)
+        
+        # Get current position
+        expanded = self.expand(text)
+        expanded_text = ''.join(expanded)
+        
+        # Create Pango layout
+        layout = self.create_pango_layout(expanded_text)
+        layout.set_font_description(self.font)
+        layout.set_width(self.wrap_width * Pango.SCALE)
+        layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+        
+        # Get current cursor position (byte index and X/Y)
+        if j > len(expanded):
+            j = len(expanded)
+        expanded_before_cursor = ''.join(expanded[:j])
+        byte_index = len(expanded_before_cursor.encode('utf-8'))
+        current_pos = layout.index_to_pos(byte_index)
+        
+        # Current row and X position
+        current_row = current_pos.y // (self.font_height * Pango.SCALE)
+        current_x = current_pos.x
+        current_x_pixels = current_x // Pango.SCALE
+        
+        # Calculate target row
+        target_row = current_row + direction
+        num_rows = layout.get_line_count()
+        
+        # DEBUG OUTPUT to file
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"\n=== _move_cursor_vertical_wrapped ===\n")
+            log.write(f"  Line {i}, char {j}, direction {'UP' if direction < 0 else 'DOWN'}\n")
+            log.write(f"  Current row: {current_row}/{num_rows}\n")
+            log.write(f"  Current X (Pango): {current_x}, pixels: {current_x_pixels}\n")
+            log.write(f"  Target X col (input): {target_x_col}\n")
+            log.write(f"  Target row: {target_row}\n")
+        
+        # Check if target row is outside current line
+        if target_row < 0 or target_row >= num_rows:
+            with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                log.write(f"  → Moving to different line (target_row out of bounds)\n")
+            return (i, j, True)  # Signal: need to move to different line
+        
+        # Use target_x_col to calculate target X in Pango units
+        # target_x_col is in character width units, convert to Pango units
+        target_x_pango = target_x_col * Pango.SCALE
+        
+        # Calculate Y position for target row (center of row)
+        target_y_pango = (target_row * self.font_height + self.font_height // 2) * Pango.SCALE
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"  Target X (Pango): {target_x_pango}, pixels: {target_x_col}\n")
+            log.write(f"  Target Y (Pango): {target_y_pango}, pixels: {target_y_pango // Pango.SCALE}\n")
+        
+        # Ask Pango: which character is at this X,Y position?
+        inside, byte_index, trailing = layout.xy_to_index(target_x_pango, target_y_pango)
+        
+        # Convert byte index back to character index
+        byte_text = expanded_text.encode('utf-8')[:byte_index]
+        new_char_pos = len(byte_text.decode('utf-8'))
+        
+        # Handle trailing (cursor after character vs before)
+        if trailing and new_char_pos < len(expanded_text):
+            new_char_pos += 1
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"  Result: byte_index={byte_index}, trailing={trailing}, new_char_pos={new_char_pos}\n")
+            log.write(f"  → Staying within same line\n")
+        
+        return (i, new_char_pos, False)  # Stayed within same line
+    
     # get the cursor position (x, y_row_offset) for wrapped text
     # returns (x_offset_pango_units, row_within_line)
     def _get_cursor_position_wrapped(self, f: int, i: int, char_pos: int) -> tuple:
@@ -1936,7 +2024,14 @@ class FileDiffViewerBase(Gtk.Grid):
         line0, line1 = self.current_line, self.selection_line
 
         # clear remembered cursor column
+        old_cursor_column = self.cursor_column
         self.cursor_column = -1
+        
+        with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+            log.write(f"\n=== setCurrentChar ===\n")
+            log.write(f"  Setting cursor: line {i}, char {j}\n")
+            log.write(f"  Old cursor_column: {old_cursor_column} → -1 (cleared)\n")
+        
         # update cursor and selection
         extend = (si is not None and sj is not None)
         if not extend:
@@ -3191,39 +3286,157 @@ class FileDiffViewerBase(Gtk.Grid):
             # up/down cursor navigation
             elif event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Page_Up, Gdk.KEY_Page_Down]:
                 i = self.current_line
+                j = self.current_char
+                
                 # move back to the remembered cursor column if possible
                 col = self.cursor_column
                 if col < 0:
                     # find the current cursor column
-                    s = utils.null_to_empty(self.getLineText(f, i))[:self.current_char]
-                    col = self.stringWidth(s)
-                if event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down]:
-                    delta = 1
+                    # For wrapped mode, we need pixel X position, not character width
+                    if self.prefs.getBool('display_wrap_lines'):
+                        # Get actual pixel X position from Pango
+                        text = self.getLineText(f, i)
+                        if text is not None:
+                            expanded = self.expand(text)
+                            expanded_text = ''.join(expanded)
+                            layout = self.create_pango_layout(expanded_text)
+                            layout.set_font_description(self.font)
+                            layout.set_width(self.wrap_width * Pango.SCALE)
+                            layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                            
+                            if j > len(expanded):
+                                j = len(expanded)
+                            expanded_before_cursor = ''.join(expanded[:j])
+                            byte_index = len(expanded_before_cursor.encode('utf-8'))
+                            pos = layout.index_to_pos(byte_index)
+                            col = pos.x // Pango.SCALE  # Get pixel X position
+                        else:
+                            col = 0
+                    else:
+                        # Non-wrapped mode: use character width units
+                        s = utils.null_to_empty(self.getLineText(f, i))[:j]
+                        col = self.stringWidth(s)
+                    
+                    with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                        log.write(f"\n=== ARROW KEY: Computing col from scratch ===\n")
+                        log.write(f"  Line {i}, char {j}\n")
+                        log.write(f"  Wrapped mode: {self.prefs.getBool('display_wrap_lines')}\n")
+                        log.write(f"  Calculated col: {col}\n")
                 else:
+                    with open('/tmp/diffuse_nav_debug.log', 'a') as log:
+                        log.write(f"\n=== ARROW KEY: Using remembered cursor_column ===\n")
+                        log.write(f"  Line {i}, char {j}\n")
+                        log.write(f"  Remembered col: {col}\n")
+                
+                # Handle Page Up/Down (existing behavior - skip wrapped rows)
+                if event.keyval in [Gdk.KEY_Page_Up, Gdk.KEY_Page_Down]:
                     delta = int(self.vadj.get_page_size() // self.font_height)
-                if event.keyval in [Gdk.KEY_Up, Gdk.KEY_Page_Up]:
-                    delta = -delta
-                i += delta
-                j = 0
-                nlines = len(self.panes[f].lines)
-                if i < 0:
-                    i = 0
-                elif i > nlines:
-                    i = nlines
-                else:
-                    # move the cursor to column 'col' if possible
-                    s = self.getLineText(f, i)
-                    if s is not None:
-                        s = utils.strip_eol(s)
-                        idx = 0
-                        for c in s:
-                            w = self.characterWidth(idx, c)
-                            if idx + w > col:
-                                break
-                            idx += w
-                            j += 1
-                self.setCurrentChar(i, j, si, sj)
-                self.cursor_column = col
+                    if event.keyval == Gdk.KEY_Page_Up:
+                        delta = -delta
+                    i += delta
+                    j = 0
+                    nlines = len(self.panes[f].lines)
+                    if i < 0:
+                        i = 0
+                    elif i > nlines:
+                        i = nlines
+                    else:
+                        # move the cursor to column 'col' if possible
+                        s = self.getLineText(f, i)
+                        if s is not None:
+                            s = utils.strip_eol(s)
+                            idx = 0
+                            for c in s:
+                                w = self.characterWidth(idx, c)
+                                if idx + w > col:
+                                    break
+                                idx += w
+                                j += 1
+                    self.setCurrentChar(i, j, si, sj)
+                    self.cursor_column = col
+                
+                # Handle Up/Down arrows
+                elif event.keyval in [Gdk.KEY_Up, Gdk.KEY_Down]:
+                    direction = -1 if event.keyval == Gdk.KEY_Up else 1
+                    
+                    # Try wrapped mode navigation first
+                    if self.prefs.getBool('display_wrap_lines'):
+                        new_i, new_j, moved_to_different_line = self._move_cursor_vertical_wrapped(
+                            f, i, j, direction, col
+                        )
+                        
+                        if not moved_to_different_line:
+                            # Successfully moved within same line
+                            self.setCurrentChar(new_i, new_j, si, sj)
+                            self.cursor_column = col
+                        else:
+                            # Need to move to different line
+                            i += direction
+                            nlines = len(self.panes[f].lines)
+                            
+                            if i < 0:
+                                i = 0
+                                j = 0
+                            elif i > nlines:
+                                i = nlines
+                                j = 0
+                            else:
+                                # Move to appropriate row of target line
+                                if direction == 1:
+                                    # Moving down: go to first row of next line
+                                    target_row = 0
+                                else:
+                                    # Moving up: go to last row of previous line
+                                    num_rows = self._get_line_height_rows(f, i)
+                                    target_row = num_rows - 1
+                                
+                                # Find character position at target_row with column 'col'
+                                text = self.getLineText(f, i)
+                                if text is not None:
+                                    expanded = self.expand(text)
+                                    expanded_text = ''.join(expanded)
+                                    
+                                    layout = self.create_pango_layout(expanded_text)
+                                    layout.set_font_description(self.font)
+                                    layout.set_width(self.wrap_width * Pango.SCALE)
+                                    layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                                    
+                                    target_x_pango = col * Pango.SCALE
+                                    target_y_pango = (target_row * self.font_height + self.font_height // 2) * Pango.SCALE
+                                    
+                                    inside, byte_index, trailing = layout.xy_to_index(target_x_pango, target_y_pango)
+                                    byte_text = expanded_text.encode('utf-8')[:byte_index]
+                                    j = len(byte_text.decode('utf-8'))
+                                    if trailing and j < len(expanded_text):
+                                        j += 1
+                                else:
+                                    j = 0
+                            
+                            self.setCurrentChar(i, j, si, sj)
+                            self.cursor_column = col
+                    else:
+                        # Non-wrapped mode: existing behavior (move to previous/next line)
+                        i += direction
+                        j = 0
+                        nlines = len(self.panes[f].lines)
+                        if i < 0:
+                            i = 0
+                        elif i > nlines:
+                            i = nlines
+                        else:
+                            # move the cursor to column 'col' if possible
+                            s = self.getLineText(f, i)
+                            if s is not None:
+                                s = utils.strip_eol(s)
+                                idx = 0
+                                for c in s:
+                                    w = self.characterWidth(idx, c)
+                                    if idx + w > col:
+                                        break
+                                    idx += w
+                                    j += 1
+                        self.setCurrentChar(i, j, si, sj)
+                        self.cursor_column = col
             # home key
             elif event.keyval == Gdk.KEY_Home:
                 if is_ctrl:
