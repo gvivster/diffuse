@@ -173,6 +173,8 @@ class FileDiffViewerBase(Gtk.Grid):
             # wrapped_cache[i] = list of (text_start, text_end, visual_row) tuples
             # or None if line i has not been wrapped yet
             self.wrapped_cache: List[Optional[List[Tuple[int, int, int]]]] = []
+            # cache of wrapped line pixel heights
+            self.wrapped_height_cache: List[int] = []
             # total height in pixels when wrapping is enabled (otherwise 0)
             self.wrapped_total_height = 0
     # class describing a single line of a pane
@@ -763,8 +765,19 @@ class FileDiffViewerBase(Gtk.Grid):
     def _get_line_pixel_height(self, f: int, i: int) -> int:
         """Get the pixel height of a line (may span multiple rows if wrapped)."""
         if self.prefs.getBool('display_wrap_lines'):
-            num_rows = self._get_line_height_rows(f, i)
-            return num_rows * self.font_height
+            # Use actual Pango layout height instead of calculation
+            text = self.getLineText(f, i)
+            if text:
+                expanded = self.expand(text)
+                expanded_text = ''.join(expanded)
+                layout = self.create_pango_layout(expanded_text)
+                layout.set_font_description(self.font)
+                layout.set_width(self.wrap_width * Pango.SCALE)
+                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                
+                actual_width, actual_height = layout.get_pixel_size()
+                return actual_height
+            return self.font_height
         return self.font_height
     
     def _get_line_y_position(self, f: int, line_index: int) -> int:
@@ -802,6 +815,7 @@ class FileDiffViewerBase(Gtk.Grid):
                 del pane.syntax_cache[:]
                 del pane.diff_cache[:]
                 del pane.wrapped_cache[:]  # Clear wrapped cache
+                del pane.wrapped_height_cache[:]  # Clear wrapped height cache
                 # re-compute the high water mark
                 pane.line_lengths = 0
                 for line in pane.lines:
@@ -854,18 +868,23 @@ class FileDiffViewerBase(Gtk.Grid):
                                 layout.set_width(self.wrap_width * Pango.SCALE)
                                 layout.set_wrap(Pango.WrapMode.WORD_CHAR)
                                 line_count = layout.get_line_count()
+                                width, height = layout.get_pixel_size()
                                 pane.wrapped_cache.append(line_count)
-                                # Add height of this line
-                                pane.wrapped_total_height += line_count * self.font_height
+                                pane.wrapped_height_cache.append(height)
+                                # Add height of this line using actual Pango height
+                                pane.wrapped_total_height += height
                             else:
                                 pane.wrapped_cache.append(1)
+                                pane.wrapped_height_cache.append(self.font_height)
                                 pane.wrapped_total_height += self.font_height
                         else:
                             pane.wrapped_cache.append(1)
+                            pane.wrapped_height_cache.append(self.font_height)
                             pane.wrapped_total_height += self.font_height
                 else:
                     # Ensure wrapped_cache has same length as lines
                     pane.wrapped_cache.extend([1] * len(pane.lines))
+                    pane.wrapped_height_cache.extend([self.font_height] * len(pane.lines))
                     pane.wrapped_total_height = 0
         # compute the maximum extents
         num_lines, line_lengths = 0, 0
@@ -1901,6 +1920,15 @@ class FileDiffViewerBase(Gtk.Grid):
         layout.set_width(self.wrap_width * Pango.SCALE)
         layout.set_wrap(Pango.WrapMode.WORD_CHAR)
         
+        # Get actual per-row height from Pango
+        num_rows = layout.get_line_count()
+        if num_rows > 0:
+            # Get the actual height of the layout and divide by number of rows
+            layout_width, layout_height = layout.get_pixel_size()
+            actual_row_height = layout_height // num_rows if num_rows > 0 else self.font_height
+        else:
+            actual_row_height = self.font_height
+        
         # Get current cursor position (byte index and X/Y)
         if j > len(expanded):
             j = len(expanded)
@@ -1908,19 +1936,19 @@ class FileDiffViewerBase(Gtk.Grid):
         byte_index = len(expanded_before_cursor.encode('utf-8'))
         current_pos = layout.index_to_pos(byte_index)
         
-        # Current row and X position
-        current_row = current_pos.y // (self.font_height * Pango.SCALE)
+        # Current row and X position - use actual row height
+        current_row = current_pos.y // (actual_row_height * Pango.SCALE)
         current_x = current_pos.x
         current_x_pixels = current_x // Pango.SCALE
         
         # Calculate target row
         target_row = current_row + direction
-        num_rows = layout.get_line_count()
         
         # DEBUG OUTPUT to file
         with open('/tmp/diffuse_nav_debug.log', 'a') as log:
             log.write(f"\n=== _move_cursor_vertical_wrapped ===\n")
             log.write(f"  Line {i}, char {j}, direction {'UP' if direction < 0 else 'DOWN'}\n")
+            log.write(f"  Actual row height: {actual_row_height}px (font_height: {self.font_height}px)\n")
             log.write(f"  Current row: {current_row}/{num_rows}\n")
             log.write(f"  Current X (Pango): {current_x}, pixels: {current_x_pixels}\n")
             log.write(f"  Target X col (input): {target_x_col}\n")
@@ -1936,8 +1964,8 @@ class FileDiffViewerBase(Gtk.Grid):
         # target_x_col is in character width units, convert to Pango units
         target_x_pango = target_x_col * Pango.SCALE
         
-        # Calculate Y position for target row (center of row)
-        target_y_pango = (target_row * self.font_height + self.font_height // 2) * Pango.SCALE
+        # Calculate Y position for target row (center of row) - use actual row height
+        target_y_pango = (target_row * actual_row_height + actual_row_height // 2) * Pango.SCALE
         
         with open('/tmp/diffuse_nav_debug.log', 'a') as log:
             log.write(f"  Target X (Pango): {target_x_pango}, pixels: {target_x_col}\n")
@@ -1978,6 +2006,14 @@ class FileDiffViewerBase(Gtk.Grid):
         layout.set_width(self.wrap_width * Pango.SCALE)
         layout.set_wrap(Pango.WrapMode.WORD_CHAR)
         
+        # Get actual per-row height from Pango
+        num_rows = layout.get_line_count()
+        if num_rows > 0:
+            layout_width, layout_height = layout.get_pixel_size()
+            actual_row_height = layout_height // num_rows if num_rows > 0 else self.font_height
+        else:
+            actual_row_height = self.font_height
+        
         # Ask Pango: where is this character?
         # Need UTF-8 byte index (Pango uses bytes, not chars)
         # Handle case where char_pos might be beyond expanded_text length
@@ -1988,8 +2024,8 @@ class FileDiffViewerBase(Gtk.Grid):
         byte_index = len(expanded_before_cursor.encode('utf-8'))
         pos = layout.index_to_pos(byte_index)
         
-        # pos has x, y, width, height in Pango units
-        row = pos.y // (self.font_height * Pango.SCALE)
+        # pos has x, y, width, height in Pango units - use actual row height
+        row = pos.y // (actual_row_height * Pango.SCALE)
         x_offset = pos.x
         
         return (x_offset, row)
@@ -2899,12 +2935,32 @@ class FileDiffViewerBase(Gtk.Grid):
                     if self.mode == EditMode.CHAR:
                         # Get cursor position within wrapped line
                         if wrap_enabled:
+                            # Get actual per-row height for this line
+                            text = self.getLineText(f, i)
+                            if text:
+                                expanded = self.expand(text)
+                                expanded_text = ''.join(expanded)
+                                layout = self.create_pango_layout(expanded_text)
+                                layout.set_font_description(self.font)
+                                layout.set_width(self.wrap_width * Pango.SCALE)
+                                layout.set_wrap(Pango.WrapMode.WORD_CHAR)
+                                num_rows = layout.get_line_count()
+                                if num_rows > 0:
+                                    layout_width, layout_height = layout.get_pixel_size()
+                                    actual_row_height = layout_height // num_rows
+                                else:
+                                    actual_row_height = h
+                            else:
+                                actual_row_height = h
+                            
                             x_offset, row = self._get_cursor_position_wrapped(f, i, self.current_char)
                             x_pos = x_start + _pixels(x_offset)
-                            cursor_y = y_start + (row * h)
+                            cursor_y = y_start + (row * actual_row_height)
+                            cursor_height = actual_row_height
                         else:
                             x_pos = x_start + _pixels(self._get_cursor_x_offset())
                             cursor_y = y_start
+                            cursor_height = h
                         
                         if has_preedit:
                             # we have preedit text
@@ -2914,7 +2970,7 @@ class FileDiffViewerBase(Gtk.Grid):
                             # clear the background
                             colour = preedit_bg_colour
                             cr.set_source_rgb(colour.red, colour.green, colour.blue)
-                            cr.rectangle(x_pos, cursor_y, w, h)
+                            cr.rectangle(x_pos, cursor_y, w, cursor_height)
                             cr.fill()
                             # draw the preedit text
                             colour = theResources.getColour('preedit')
@@ -2928,7 +2984,7 @@ class FileDiffViewerBase(Gtk.Grid):
                         cr.set_source_rgb(colour.red, colour.green, colour.blue)
                         cr.set_line_width(1)
                         cr.move_to(x_pos + 0.5, cursor_y)
-                        cr.rel_line_to(0, h)
+                        cr.rel_line_to(0, cursor_height)
                         cr.stroke()
                     elif self.mode in (EditMode.LINE, EditMode.ALIGN):
                         # draw the line editing cursor
