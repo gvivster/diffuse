@@ -1748,9 +1748,19 @@ class FileDiffViewerBase(Gtk.Grid):
             line1 = line0
         elif line0 > line1:
             line0, line1 = line1, line0
+        
         darea = self.dareas[f]
-        w, h = darea.get_allocation().width, self.font_height
-        darea.queue_draw_area(0, line0 * h - int(self.vadj.get_value()), w, (line1 - line0 + 1) * h)
+        w = darea.get_allocation().width
+        
+        if self.prefs.getBool('display_wrap_lines'):
+            # Use actual wrapped line positions
+            y0 = self._get_line_y_position(f, line0)
+            y1 = self._get_line_y_position(f, line1) + self._get_line_pixel_height(f, line1)
+            darea.queue_draw_area(0, y0 - int(self.vadj.get_value()), w, y1 - y0)
+        else:
+            # Fixed height calculation for non-wrapped mode
+            h = self.font_height
+            darea.queue_draw_area(0, line0 * h - int(self.vadj.get_value()), w, (line1 - line0 + 1) * h)
 
     # scroll vertically to ensure the current line is visible
     def _ensure_line_is_visible(self, i: int) -> None:
